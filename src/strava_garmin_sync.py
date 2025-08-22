@@ -417,10 +417,6 @@ class StravaGarminSync:
             logger.error("❌ Impossible d'initialiser le client Strava")
             return False
         
-        if not self.init_garmin_client():
-            logger.error("❌ Impossible d'initialiser le client Garmin")
-            return False
-        
         # Récupérer les activités des deux plateformes
         sync_days = int(os.getenv('SYNC_DAYS', '7'))
         logger.info(f"📅 Synchronisation des activités des {sync_days} derniers jours")
@@ -446,6 +442,9 @@ class StravaGarminSync:
             return True
         # ---------------------------------------------------------------
 
+        if not self.init_garmin_client():
+            logger.error("❌ Impossible d'initialiser le client Garmin")
+            return False
         
         garmin_activities = self.get_garmin_activities_for_period(days=sync_days)
         if not garmin_activities:
