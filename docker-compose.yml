@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  strava-garmin-sync:
+    build: .
+    container_name: strava-garmin-sync
+    restart: unless-stopped
+    environment:
+      # Configuration Strava (à remplacer par vos vraies valeurs)
+      - STRAVA_CLIENT_ID=your_strava_client_id
+      - STRAVA_CLIENT_SECRET=your_strava_client_secret
+      - STRAVA_ACCESS_TOKEN=your_strava_access_token
+      - STRAVA_REFRESH_TOKEN=your_strava_refresh_token
+      - STRAVA_REFRESH_TOKEN_AT=your_strava_refresh_token
+      
+      # Configuration Garmin (à remplacer par vos vraies valeurs)
+      - GARMIN_EMAIL=your_garmin_email
+      - GARMIN_PASSWORD=your_garmin_password
+      
+      # Configuration de synchronisation
+      - SYNC_INTERVAL_MINUTES=60  # Synchronisation toutes les 60 minutes
+      - SYNC_DAYS=7              # Nombre de jours à synchroniser
+      - RUN_MODE=scheduler        # ou 'once' pour une exécution unique
+      
+      # Timezone
+      - TZ=Europe/Paris
+    
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      
+    # Optionnel: ressources limitées
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    
+    # Optionnel: health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  logs:
