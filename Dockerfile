@@ -21,8 +21,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copier le code de l'application
-COPY src/strava_garmin_sync_app/ .
+# Copier le code de l'application (arborescence complète)
+COPY src/ /app/src/
+
+# Assurer la résolution des imports de type `from src...`
+ENV PYTHONPATH=/app
 
 # Créer le répertoire pour les logs
 RUN mkdir -p /app/logs && mkdir -p /app/data
@@ -39,5 +42,5 @@ VOLUME ["/app/logs", "/app/data"]
 # Port d'exposition (optionnel, pour monitoring futur)
 EXPOSE 8080
 
-# Point d'entrée
-ENTRYPOINT ["python", "strava_garmin_sync.py"]
+# Point d'entrée (exécuter le module, évite les imports relatifs cassés)
+ENTRYPOINT ["python", "-m", "src.strava_garmin_sync_app.strava_garmin_sync"]
