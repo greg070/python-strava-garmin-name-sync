@@ -12,7 +12,15 @@ from typing import Optional, List, Dict
 import json
 import schedule
 from stravalib import Client as StravaClient
-from garminconnect import Garmin
+from garth.exc import GarthHTTPError
+
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    GarminConnectTooManyRequestsError,
+)
+
 import pytz
 from dataclasses import dataclass
 
@@ -66,6 +74,7 @@ class StravaGarminSync:
         
         self.garmin_email = os.getenv('GARMIN_EMAIL')
         self.garmin_password = os.getenv('GARMIN_PASSWORD')
+        self.garmin_tokenstore = os.getenv("GARMIN_TOKENS_FILE_LOC") or "data/.garminconnect"
 
         # dry run mode
         self.dry_run = os.getenv('DRY_RUN', 'false').lower() in ['1', 'true', 'yes']
@@ -131,16 +140,44 @@ class StravaGarminSync:
     def init_garmin_client(self) -> bool:
         """Initialise le client Garmin"""
         try:
-            self.garmin_client = Garmin(self.garmin_email, self.garmin_password)
-            self.garmin_client.login()
+            # Using Oauth1 and OAuth2 token files from directory
+            logger.info(
+                f"Trying to login to Garmin Connect using token data from directory '{self.garmin_tokenstore}'..."
+            )
+
+            self.garmin_client = Garmin()
+            self.garmin_client.login(self.garmin_tokenstore)
             
             # Test de connexion
             display_name = self.garmin_client.get_full_name()
             logger.info(f"Connecté à Garmin: {display_name}")
             return True
+        
+        except (FileNotFoundError, GarthHTTPError, GarminConnectAuthenticationError, json.decoder.JSONDecodeError):
+            logger.warning("Token Garmin non trouvé ou invalide, connexion avec email/mot de passe...")
+            try:
+                self.garmin_client = Garmin(self.garmin_email, self.garmin_password)
+                self.garmin_client.login()
+
+                display_name = self.garmin_client.get_full_name()
+                logger.info(f"Connecté à Garmin: {display_name}")
+
+                # Save Oauth1 and Oauth2 token files to directory for next login
+                self.garmin_client.garth.dump(self.garmin_tokenstore)
+                logger.info(
+                    f"Oauth tokens stored in '{self.garmin_tokenstore}' directory for future use"
+                )
+
+                # Re-login Garmin API with tokens
+                self.garmin_client.login(self.garmin_tokenstore)
+                return True
+            except Exception as e:
+                logger.exception(f"Erreur initialisation Garmin: {e}")
+                logger.error("Vérifiez vos identifiants Garmin Connect")
+                return False
             
         except Exception as e:
-            logger.error(f"Erreur initialisation Garmin: {e}")
+            logger.exception(f"Erreur initialisation Garmin: {e}")
             logger.error("Vérifiez vos identifiants Garmin Connect")
             return False
     
@@ -161,6 +198,10 @@ class StravaGarminSync:
             self.strava_access_token = token_response["access_token"]
             self.strava_refresh_token = token_response["refresh_token"]
             self.strava_token_expires_at = token_response["expires_at"]
+
+            self.strava_client.access_token = self.strava_access_token
+            self.strava_client.refresh_token = self.strava_refresh_token
+            self.strava_client.token_expires = self.strava_token_expires_at
 
             print("Access Token:", token_response['access_token'])
             print("Refresh Token:", token_response['refresh_token'])
