@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 python:3.13-slim
+FROM python:3.13-slim
 
 # Informations de l'image
 LABEL maintainer="your-email@example.com"
@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copier le code de l'application
-COPY src/strava_garmin_sync.py .
+COPY src/strava_garmin_sync_app/ .
 
 # Créer le répertoire pour les logs
 RUN mkdir -p /app/logs && mkdir -p /app/data
