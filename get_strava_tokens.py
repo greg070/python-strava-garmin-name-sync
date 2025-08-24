@@ -1,7 +1,12 @@
-from stravalib.client import Client
+#!/usr/bin/env python3
+"""
+Script to obtain Strava API tokens and save them to a file.
+"""
+
 import pickle
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+from stravalib.client import Client
 
 load_dotenv()
 
@@ -10,7 +15,9 @@ CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET')
 
 client = Client()
 
-url = client.authorization_url(client_id=CLIENT_ID, redirect_uri='http://127.0.0.1:5000/authorization', scope=['read','activity:read_all','activity:write'])
+url = client.authorization_url(client_id=CLIENT_ID,
+                               redirect_uri='http://127.0.0.1:5000/authorization',
+                               scope=['read','activity:read_all','activity:write'])
 
 print(f"Please visit this URL to authorize the application: {url}")
 
