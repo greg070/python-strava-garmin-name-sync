@@ -183,9 +183,62 @@ class StravaGarminSync:
 
             return True
 
-        except Exception as e: # pylint: disable=broad-except
+        except Exception as e:  # pylint: disable=broad-except
             logger.error("Erreur initialisation Strava: %s", e)
             return False
+
+    def _process_sync_activity(
+        self,
+        strava_activity: ActivityData,
+        garmin_activities: Dict[str, Dict],
+        synced_cache: set,
+    ) -> tuple[bool, bool, bool]:
+        """Process a single Strava activity sync. Returns (updated, skipped, error)."""
+        try:
+            garmin_activity = self.find_matching_garmin_activity(strava_activity, garmin_activities)
+            if not garmin_activity:
+                logger.info("⏭️ Aucune activité Garmin trouvée pour: '%s'", strava_activity.name)
+                synced_cache.add(strava_activity.id)
+                return False, True, False
+
+            needs_update, new_name, new_description = self.should_update_activity(
+                strava_activity, garmin_activity
+            )
+
+            if not needs_update:
+                logger.info("✅ '%s' déjà à jour", strava_activity.name)
+                synced_cache.add(strava_activity.id)
+                return False, True, False
+
+            if self.update_strava_activity(strava_activity.id, new_name, new_description):
+                logger.info("🔄 '%s' → '%s'", strava_activity.name, new_name)
+                synced_cache.add(strava_activity.id)
+                return True, False, False
+
+            return False, False, True
+
+        except Exception as e:  # pylint: disable=broad-except
+            logger.error("❌ Erreur sync activité '%s': %s", strava_activity.name, e)
+            return False, False, True
+
+    def _load_synced_cache(self) -> set:
+        """Load synced cache set from file, return empty set on error."""
+        try:
+            if os.path.exists(self.strava.cache_file):
+                with open(self.strava.cache_file, "r", encoding="utf-8") as f:
+                    return set(json.load(f))
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning("Impossible de lire le cache de synchronisation: %s", e)
+        return set()
+
+    def _save_synced_cache(self, synced_cache: set) -> None:
+        """Persist synced cache set to file."""
+        try:
+            with open(self.strava.cache_file, "w", encoding="utf-8") as f:
+                json.dump(list(synced_cache), f, indent=2)
+            logger.info("🗂️ Cache de synchronisation mise à jour")
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning("Impossible de sauvegarder le cache de synchronisation: %s", e)
 
     def init_garmin_client(self) -> bool:
         """Initialise le client Garmin"""
@@ -329,93 +382,25 @@ class StravaGarminSync:
             current_time = time.time()
 
             # Vérifier le cache
-            if (cache_key in self.cache.data and
-                current_time - self.cache.data[cache_key]['timestamp'] < self.cache.duration):
-                logger.debug("Utilisation du cache pour les activités Garmin")
-                return self.cache.data[cache_key]['data']
+            cached = self.cache.data.get(cache_key)
+            if cached and (current_time - cached.get('timestamp', 0) < self.cache.duration):
+                logger.info("Utilisation du cache activités Garmin (%s jours)", days)
+                return cached.get('data', {})
 
-            activities = {}
+            activities: Dict[str, Dict] = {}
             start_date = datetime.now() - timedelta(days=days)
-
-            # Récupérer les activités par chunks de jours pour éviter la surcharge
             current_date = start_date
             while current_date <= datetime.now():
+                date_str = current_date.strftime('%Y-%m-%d')
                 try:
-                    date_str = current_date.strftime('%Y-%m-%d')
                     daily_activities = self.clients.garmin.get_activities_by_date(
-                        date_str, date_str)
-
+                        date_str, date_str
+                    )
                     if daily_activities:
                         for activity in daily_activities:
-
-                            logger.info(
-                                "Garmin Activity: ID=%s, Name='%s', Start=%s, Type=%s",
-                                activity.get("activityId"),
-                                activity.get("activityName"),
-                                activity.get("startTimeLocal"),
-                                activity.get("activityType", {}).get("typeKey"),
-                            )
-
-                            logger.debug(
-                                "Garmin Activity: %s",
-                                json.dumps(activity, indent=2, ensure_ascii=False),
-                            )
-
-
-                            activity_id = str(activity.get('activityId', ''))
-                            if activity_id:
-                                # Normaliser la date de début
-                                start_time_str = activity.get('startTimeLocal', '')
-                                if start_time_str:
-                                    # Garmin utilise parfois des formats différents
-                                    try:
-                                        if 'T' in start_time_str:
-                                            start_time = datetime.fromisoformat(
-                                                start_time_str.replace('Z', ''))
-                                        else:
-                                            start_time = datetime.strptime(
-                                                start_time_str,
-                                                '%Y-%m-%d %H:%M:%S')
-                                        activity['parsed_start_time'] = start_time
-                                    except Exception as err:  # pylint: disable=broad-except
-                                        logger.warning("Format de date non reconnu: %s (%s)",
-                                                        start_time_str,
-                                                        err)
-                                        continue
-
-                                # Récupérer le workout associé si present
-                                associated_workout_id = activity.get('workoutId')
-
-                                logger.info(
-                                    "Workout ID associé à l'activité Garmin: %s",
-                                    associated_workout_id,
-                                )
-
-
-                                if associated_workout_id:
-                                    try:
-                                        workout = self.clients.garmin.get_workout_by_id(
-                                            str(associated_workout_id)
-                                            )
-                                        logger.debug(
-                                            "workout garmin: %s",
-                                            json.dumps(workout, indent=2, ensure_ascii=False),
-)
-
-                                        activity['workout'] = workout
-                                    except Exception as e: # pylint: disable=broad-except
-                                        logger.warning(
-                                            "Impossible de récupérer le workout %s: %s",
-                                            associated_workout_id,
-                                            e,
-                                        )
-
-                                activities[activity_id] = activity
-
-                    # Petit délai pour éviter de surcharger Garmin
-                    time.sleep(1)
-
-                except Exception as e: # pylint: disable=broad-except
+                            self._process_garmin_activity(activities, activity)
+                    time.sleep(1)  # Eviter de surcharger Garmin
+                except Exception as e:  # pylint: disable=broad-except
                     logger.warning("Erreur récupération activités Garmin pour %s: %s", date_str, e)
 
                 current_date += timedelta(days=1)
@@ -429,9 +414,58 @@ class StravaGarminSync:
             logger.info("Récupéré %s activités Garmin sur %s jours", len(activities), days)
             return activities
 
-        except Exception as e: # pylint: disable=broad-except
+        except Exception as e:  # pylint: disable=broad-except
             logger.error("Erreur récupération activités Garmin: %s", e)
             return {}
+
+    def _process_garmin_activity(self, activities: Dict[str, Dict], activity: Dict) -> None:
+        """Normalise et ajoute une activité Garmin au dict 'activities' si valide."""
+        logger.info(
+            "Garmin Activity: ID=%s, Name='%s', Start=%s, Type=%s",
+            activity.get("activityId"),
+            activity.get("activityName"),
+            activity.get("startTimeLocal"),
+            activity.get("activityType", {}).get("typeKey"),
+        )
+        logger.debug("Garmin Activity: %s", json.dumps(activity, indent=2, ensure_ascii=False))
+
+        activity_id = str(activity.get('activityId', ''))
+        if not activity_id:
+            return
+
+        parsed_start = self._parse_garmin_start_time(activity.get('startTimeLocal', ''))
+        if not parsed_start:
+            return
+        activity['parsed_start_time'] = parsed_start
+
+        self._maybe_attach_workout(activity)
+        activities[activity_id] = activity
+
+    @staticmethod
+    def _parse_garmin_start_time(start_time_str: str) -> Optional[datetime]:
+        """Parse Garmin start time formats into a datetime, returns None if invalid."""
+        if not start_time_str:
+            return None
+        try:
+            if 'T' in start_time_str:
+                return datetime.fromisoformat(start_time_str.replace('Z', ''))
+            return datetime.strptime(start_time_str, '%Y-%m-%d %H:%M:%S')
+        except Exception as err:  # pylint: disable=broad-except
+            logger.warning("Format de date non reconnu: %s (%s)", start_time_str, err)
+            return None
+
+    def _maybe_attach_workout(self, activity: Dict) -> None:
+        """Attach workout details to activity if workoutId present."""
+        associated_workout_id = activity.get('workoutId')
+        logger.info("Workout ID associé à l'activité Garmin: %s", associated_workout_id)
+        if not associated_workout_id:
+            return
+        try:
+            workout = self.clients.garmin.get_workout_by_id(str(associated_workout_id))
+            logger.debug("workout garmin: %s", json.dumps(workout, indent=2, ensure_ascii=False))
+            activity['workout'] = workout
+        except Exception as e: # pylint: disable=broad-except
+            logger.warning("Impossible de récupérer le workout %s: %s", associated_workout_id, e)
 
     # Mapping Garmin typeKey to Strava type
     GARMIN_TO_STRAVA_TYPE = {
@@ -556,11 +590,11 @@ class StravaGarminSync:
     def sync_activities(self):
         """Synchronise les activités entre Strava et Garmin"""
         # --- Fenêtre horaire BE ---
-        be_tz = pytz.timezone("Europe/Brussels")
-        now_be = datetime.now(be_tz)
-        if 0 <= now_be.hour < 6:
-            logger.info("⏳ Fenêtre de synchronisation fermée (minuit-6h BE). Sync ignorée.")
-            return False
+        if 0 <= datetime.now(pytz.timezone("Europe/Brussels")).hour < 6:
+            logger.info(
+                "⏳ Fenêtre de synchronisation fermée (minuit-6h BE). Sync ignorée."
+            )
+            return True
         # --- Fin fenêtre horaire ---
 
         logger.info("🔄 Début de la synchronisation...")
@@ -580,91 +614,53 @@ class StravaGarminSync:
         strava_activities = self.get_recent_strava_activities(days=sync_days)
         if not strava_activities:
             logger.warning("⚠️ Aucune activité Strava trouvée")
-            return False
+            strava_activities = []
 
-        synced_cache = set()
-        try:
-            if os.path.exists(self.strava.cache_file):
-                with open(self.strava.cache_file, "r", encoding="utf-8") as f:
-                    synced_cache = set(json.load(f))
-        except Exception as e: # pylint: disable=broad-except
-            logger.warning("Impossible de lire le cache de synchronisation: %s", e)
-            synced_cache = set()
+        synced_cache = self._load_synced_cache()
 
         # Filtrer les activités déjà synchronisées
         strava_activities_to_update = [a for a in strava_activities if a.id not in synced_cache]
         if not strava_activities_to_update:
-            logger.info("✅ Toutes les activités Strava récentes sont déjà synchronisées (cache)")
-            return True
+            logger.info(
+                "✅ Toutes les activités Strava récentes sont déjà synchronisées (cache)"
+            )
         # ---------------------------------------------------------------
 
-        if not self.init_garmin_client():
+        if strava_activities_to_update and not self.init_garmin_client():
             logger.error("❌ Impossible d'initialiser le client Garmin")
             return False
 
-        garmin_activities = self.get_garmin_activities_for_period(days=sync_days)
-        if not garmin_activities:
-            logger.warning("⚠️ Aucune activité Garmin trouvée")
-            return False
+        garmin_activities = {}
+        if strava_activities_to_update:
+            garmin_activities = self.get_garmin_activities_for_period(days=sync_days)
+            if not garmin_activities:
+                logger.warning("⚠️ Aucune activité Garmin trouvée")
+                garmin_activities = {}
 
         # Synchroniser les activités
-        updates_count = 0
-        skipped_count = 0
-        errors_count = 0
+        counts = {"updates": 0, "skipped": 0, "errors": 0}
 
-        for strava_activity in strava_activities:
-            try:
-                # Trouver l'activité Garmin correspondante
-                garmin_activity = self.find_matching_garmin_activity(strava_activity,
-                                                                    garmin_activities)
-
-                if not garmin_activity:
-                    logger.info(
-                        "⏭️ Aucune activité Garmin trouvée pour: '%s'",
-                        strava_activity.name
-                    )
-                    skipped_count += 1
-                    continue
-
-                # Vérifier s'il faut mettre à jour
-                needs_update, new_name, new_description = self.should_update_activity(
-                    strava_activity, garmin_activity
-                )
-
-                if needs_update:
-                    if self.update_strava_activity(strava_activity.id, new_name, new_description):
-                        updates_count += 1
-                        logger.info("🔄 '%s' → '%s'", strava_activity.name, new_name)
-                        synced_cache.add(strava_activity.id)
-                    else:
-                        errors_count += 1
-                else:
-                    logger.info("✅ '%s' déjà à jour", strava_activity.name)
-                    skipped_count += 1
-                    synced_cache.add(strava_activity.id)
-
-            except Exception as e: # pylint: disable=broad-except
-                logger.error("❌ Erreur sync activité '%s': %s", strava_activity.name, e)
-                errors_count += 1
-                continue
+        for strava_activity in strava_activities_to_update:
+            updated, skipped, error = self._process_sync_activity(
+                strava_activity,
+                garmin_activities,
+                synced_cache,
+            )
+            counts["updates"] += int(updated)
+            counts["skipped"] += int(skipped)
+            counts["errors"] += int(error)
 
         # Sauvegarder le cache mis à jour après la boucle
-        try:
-            with open(self.strava.cache_file, "w", encoding="utf-8") as f:
-                json.dump(list(synced_cache), f, indent=2)
-            logger.info("🗂️ Cache de synchronisation mise à jour")
-        except Exception as e: # pylint: disable=broad-except
-            logger.warning("Impossible de sauvegarder le cache de synchronisation: %s", e)
+        self._save_synced_cache(synced_cache)
 
         # Résumé
-        duration = time.time() - start_time
         logger.info("=" * 50)
-        logger.info("✅ Synchronisation terminée en %.1fs", duration)
+        logger.info("✅ Synchronisation terminée en %.1fs", time.time() - start_time)
         logger.info("📊 Résultats:")
-        logger.info("   • Mises à jour: %s", updates_count)
-        logger.info("   • Ignorées: %s", skipped_count)
-        logger.info("   • Erreurs: %s", errors_count)
-        logger.info("   • Total traité: %s", len(strava_activities))
+        logger.info("   • Mises à jour: %s", counts["updates"])
+        logger.info("   • Ignorées: %s", counts["skipped"])
+        logger.info("   • Erreurs: %s", counts["errors"])
+        logger.info("   • Total traité: %s", len(strava_activities_to_update))
         logger.info("=" * 50)
 
         return True
