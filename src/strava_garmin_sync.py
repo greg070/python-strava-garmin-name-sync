@@ -44,61 +44,102 @@ class ActivityData:
     type: str
     garmin_id: Optional[str] = None
 
+@dataclass
+class GeneralConfig:
+    """Configuration générale de l'application"""
+    dry_run: bool
+
+@dataclass
+class StravaConfig:
+    """Configuration et tokens Strava"""
+    client_id: Optional[str]
+    client_secret: Optional[str]
+    access_token: Optional[str]
+    refresh_token: Optional[str]
+    token_expires_at: int
+    token_path: str
+    cache_file: str
+
+@dataclass
+class GarminConfig:
+    """Configuration Garmin"""
+    email: Optional[str]
+    password: Optional[str]
+    tokenstore: str
+
+@dataclass
+class ActivityCache:
+    """Cache d'activités et durée de validité"""
+    data: Dict
+    duration: int
+
+@dataclass
+class SyncState:
+    """Etat volatile de l'application"""
+    last_strava_connection_check: float = 0
+    athlete: Optional[object] = None
+
+@dataclass
+class Clients:
+    """Clients API"""
+    strava: Optional[StravaClient] = None
+    garmin: Optional[Garmin] = None
+
 class StravaGarminSync:
     """Classe principale pour la synchronisation Strava-Garmin"""
     def __init__(self):
-        # Configuration depuis les variables d'environnement
-        self.strava_client_id = os.getenv('STRAVA_CLIENT_ID')
-        self.strava_client_secret = os.getenv('STRAVA_CLIENT_SECRET')
-        self.strava_access_token = os.getenv('STRAVA_ACCESS_TOKEN')
-        self.strava_refresh_token = os.getenv('STRAVA_REFRESH_TOKEN')
-        self.strava_token_expires_at = int(os.getenv('STRAVA_TOKEN_EXPIRES_AT', '0'))
-        self.last_strava_connection_check = 0  # Timestamp of last connection test
-        self.strava_athlete = None
-        self.strava_cache_file = "data/.strava_synced_cache.json"
+        # General
+        self.general = GeneralConfig(
+            dry_run=os.getenv('DRY_RUN', 'false').lower() in ['1', 'true', 'yes']
+        )
 
-        # Charger le token Strava depuis un fichier si disponible
-        self.strava_token_path = "data/.strava_token.json"
-        self.load_strava_token()
+        # Strava
+        self.strava = StravaConfig(
+            client_id=os.getenv('STRAVA_CLIENT_ID'),
+            client_secret=os.getenv('STRAVA_CLIENT_SECRET'),
+            access_token=os.getenv('STRAVA_ACCESS_TOKEN'),
+            refresh_token=os.getenv('STRAVA_REFRESH_TOKEN'),
+            token_expires_at=int(os.getenv('STRAVA_TOKEN_EXPIRES_AT', '0')),
+            token_path="data/.strava_token.json",
+            cache_file="data/.strava_synced_cache.json",
+        )
 
-        self.garmin_email = os.getenv('GARMIN_EMAIL')
-        self.garmin_password = os.getenv('GARMIN_PASSWORD')
-        self.garmin_tokenstore = os.getenv("GARMIN_TOKENS_FILE_LOC") or "data/.garminconnect"
-
-        # dry run mode
-        self.dry_run = os.getenv('DRY_RUN', 'false').lower() in ['1', 'true', 'yes']
+        # Garmin
+        self.garmin = GarminConfig(
+            email=os.getenv('GARMIN_EMAIL'),
+            password=os.getenv('GARMIN_PASSWORD'),
+            tokenstore=os.getenv("GARMIN_TOKENS_FILE_LOC") or "data/.garminconnect",
+        )
 
         # Clients
-        self.strava_client = None
-        self.garmin_client = None
+        self.clients = Clients()
 
-        # Rate limiting
-        self.last_strava_request = 0
-        self.strava_requests_count = 0
-        self.strava_daily_limit = 1000  # Limite quotidienne Strava
-        self.strava_rate_limit = 100    # Limite par 15 minutes
+        # Cache
+        self.cache = ActivityCache(data={}, duration=3600)
 
-        # Cache des activités pour éviter les requêtes répétées
-        self.activity_cache = {}
-        self.cache_duration = 3600  # 1 heure
+        # State
+        self.state = SyncState()
+
+        # Charger le token Strava depuis un fichier si disponible
+        self.load_strava_token()
 
         self.validate_config()
 
     def load_strava_token(self):
         """Charge le token Strava depuis un fichier"""
-        if os.path.exists(self.strava_token_path):
+        if os.path.exists(self.strava.token_path):
             try:
-                with open(self.strava_token_path, "r", encoding="utf-8") as f:
+                with open(self.strava.token_path, "r", encoding="utf-8") as f:
                     token_data = json.load(f)
-                    self.strava_access_token = token_data.get("access_token",
-                                                               self.strava_access_token)
-                    self.strava_refresh_token = token_data.get("refresh_token",
-                                                               self.strava_refresh_token)
-                    self.strava_token_expires_at = token_data.get("expires_at",
-                                                                  self.strava_token_expires_at)
-                logger.info("Token Strava chargé depuis %s", self.strava_token_path)
+                    self.strava.access_token = token_data.get("access_token",
+                                                               self.strava.access_token)
+                    self.strava.refresh_token = token_data.get("refresh_token",
+                                                               self.strava.refresh_token)
+                    self.strava.token_expires_at = token_data.get("expires_at",
+                                                                  self.strava.token_expires_at)
+                logger.info("Token Strava chargé depuis %s", self.strava.token_path)
             except (OSError, json.JSONDecodeError) as err:
-                logger.warning("Impossible de lire %s: %s",self.strava_token_path,err)
+                logger.warning("Impossible de lire %s: %s",self.strava.token_path,err)
 
     def validate_config(self):
         """Valide la configuration"""
@@ -123,22 +164,22 @@ class StravaGarminSync:
                 self.refresh_strava_token()
 
             now = time.time()
-            if now - getattr(self, "last_strava_connection_check", 0) > 900:
-                self.strava_client = StravaClient(
-                                                    access_token=self.strava_access_token,
-                                                    refresh_token=self.strava_refresh_token,
-                                                    token_expires=self.strava_token_expires_at
+            if now - getattr(self.state, "last_strava_connection_check", 0) > 900:
+                self.clients.strava = StravaClient(
+                                                    access_token=self.strava.access_token,
+                                                    refresh_token=self.strava.refresh_token,
+                                                    token_expires=self.strava.token_expires_at
                                                 )
 
-                self.strava_athlete = self.strava_client.get_athlete()
+                self.state.athlete = self.clients.strava.get_athlete()
                 logger.info("Connecté à Strava: %s %s",
-                            self.strava_athlete.firstname, 
-                            self.strava_athlete.lastname)
-                self.last_strava_connection_check = now
+                            self.state.athlete.firstname,
+                            self.state.athlete.lastname)
+                self.state.last_strava_connection_check = now
             else:
                 logger.info("Connecté à Strava: %s %s",
-                            self.strava_athlete.firstname,
-                            self.strava_athlete.lastname)
+                            self.state.athlete.firstname,
+                            self.state.athlete.lastname)
 
             return True
 
@@ -152,14 +193,14 @@ class StravaGarminSync:
             # Using Oauth1 and OAuth2 token files from directory
             logger.info(
                 "Trying to login to Garmin Connect using token data from directory '%s'...", 
-                self.garmin_tokenstore
+                self.garmin.tokenstore
             )
 
-            self.garmin_client = Garmin()
-            self.garmin_client.login(self.garmin_tokenstore)
+            self.clients.garmin = Garmin()
+            self.clients.garmin.login(self.garmin.tokenstore)
 
             # Test de connexion
-            display_name = self.garmin_client.get_full_name()
+            display_name = self.clients.garmin.get_full_name()
             logger.info("Connecté à Garmin: %s", display_name)
             return True
 
@@ -171,20 +212,20 @@ class StravaGarminSync:
                 "Token Garmin non trouvé ou invalide, connexion avec email/mot de passe..."
             )
             try:
-                self.garmin_client = Garmin(self.garmin_email, self.garmin_password)
-                self.garmin_client.login()
+                self.clients.garmin = Garmin(self.garmin.email, self.garmin.password)
+                self.clients.garmin.login()
 
-                display_name = self.garmin_client.get_full_name()
+                display_name = self.clients.garmin.get_full_name()
                 logger.info("Connecté à Garmin: %s", display_name)
 
                 # Save Oauth1 and Oauth2 token files to directory for next login
-                self.garmin_client.garth.dump(self.garmin_tokenstore)
+                self.clients.garmin.garth.dump(self.garmin.tokenstore)
                 logger.info(
-                    "Oauth tokens stored in '%s' directory for future use", self.garmin_tokenstore
+                    "Oauth tokens stored in '%s' directory for future use", self.garmin.tokenstore
                 )
 
                 # Re-login Garmin API with tokens
-                self.garmin_client.login(self.garmin_tokenstore)
+                self.clients.garmin.login(self.garmin.tokenstore)
                 return True
             except Exception as e: # pylint: disable=broad-except
                 logger.exception("Erreur initialisation Garmin: %s", e)
@@ -198,7 +239,7 @@ class StravaGarminSync:
 
     def is_token_expired(self) -> bool:
         """Vérifie si le token Strava est expiré (basé sur l'expiration locale)"""
-        return time.time() >= self.strava_token_expires_at
+        return time.time() >= self.strava.token_expires_at
 
     def refresh_strava_token(self):
         """Rafraîchit le token Strava"""
@@ -206,17 +247,18 @@ class StravaGarminSync:
             # Utiliser la méthode de la librairie stravalib pour rafraîchir le token
             client = StravaClient()
             token_response = client.refresh_access_token(
-                client_id=self.strava_client_id,
-                client_secret=self.strava_client_secret,
-                refresh_token=self.strava_refresh_token,
+                client_id=self.strava.client_id,
+                client_secret=self.strava.client_secret,
+                refresh_token=self.strava.refresh_token,
             )
-            self.strava_access_token = token_response["access_token"]
-            self.strava_refresh_token = token_response["refresh_token"]
-            self.strava_token_expires_at = token_response["expires_at"]
+            self.strava.access_token = token_response["access_token"]
+            self.strava.refresh_token = token_response["refresh_token"]
+            self.strava.token_expires_at = token_response["expires_at"]
 
-            self.strava_client.access_token = self.strava_access_token
-            self.strava_client.refresh_token = self.strava_refresh_token
-            self.strava_client.token_expires = self.strava_token_expires_at
+            if self.clients.strava:
+                self.clients.strava.access_token = self.strava.access_token
+                self.clients.strava.refresh_token = self.strava.refresh_token
+                self.clients.strava.token_expires = self.strava.token_expires_at
 
             print("Access Token:", token_response['access_token'])
             print("Refresh Token:", token_response['refresh_token'])
@@ -224,11 +266,11 @@ class StravaGarminSync:
 
             # Sauvegarder le refresh token dans un fichier pour persistance
             try:
-                with open(self.strava_token_path, "w", encoding="utf-8") as f:
+                with open(self.strava.token_path, "w", encoding="utf-8") as f:
                     json.dump({
-                        "access_token": self.strava_access_token,
-                        "refresh_token": self.strava_refresh_token,
-                        "expires_at": self.strava_token_expires_at
+                        "access_token": self.strava.access_token,
+                        "refresh_token": self.strava.refresh_token,
+                        "expires_at": self.strava.token_expires_at
                     }, f, indent=2)
                 logger.info("Token Strava sauvegardé dans strava_token.json")
             except Exception as file_err: # pylint: disable=broad-except
@@ -245,7 +287,7 @@ class StravaGarminSync:
         try:
 
             after_date = datetime.now() - timedelta(days=days)
-            activities = self.strava_client.get_activities(after=after_date, limit=200)
+            activities = self.clients.strava.get_activities(after=after_date, limit=200)
 
             strava_activities = []
             for activity in activities:
@@ -287,10 +329,10 @@ class StravaGarminSync:
             current_time = time.time()
 
             # Vérifier le cache
-            if (cache_key in self.activity_cache and 
-                current_time - self.activity_cache[cache_key]['timestamp'] < self.cache_duration):
+            if (cache_key in self.cache.data and
+                current_time - self.cache.data[cache_key]['timestamp'] < self.cache.duration):
                 logger.debug("Utilisation du cache pour les activités Garmin")
-                return self.activity_cache[cache_key]['data']
+                return self.cache.data[cache_key]['data']
 
             activities = {}
             start_date = datetime.now() - timedelta(days=days)
@@ -300,7 +342,8 @@ class StravaGarminSync:
             while current_date <= datetime.now():
                 try:
                     date_str = current_date.strftime('%Y-%m-%d')
-                    daily_activities = self.garmin_client.get_activities_by_date(date_str, date_str)
+                    daily_activities = self.clients.garmin.get_activities_by_date(
+                        date_str, date_str)
 
                     if daily_activities:
                         for activity in daily_activities:
@@ -331,7 +374,7 @@ class StravaGarminSync:
                                                 start_time_str.replace('Z', ''))
                                         else:
                                             start_time = datetime.strptime(
-                                                start_time_str, 
+                                                start_time_str,
                                                 '%Y-%m-%d %H:%M:%S')
                                         activity['parsed_start_time'] = start_time
                                     except Exception as err:  # pylint: disable=broad-except
@@ -351,7 +394,7 @@ class StravaGarminSync:
 
                                 if associated_workout_id:
                                     try:
-                                        workout = self.garmin_client.get_workout_by_id(
+                                        workout = self.clients.garmin.get_workout_by_id(
                                             str(associated_workout_id)
                                             )
                                         logger.debug(
@@ -371,21 +414,21 @@ class StravaGarminSync:
 
                     # Petit délai pour éviter de surcharger Garmin
                     time.sleep(1)
-  
+
                 except Exception as e: # pylint: disable=broad-except
                     logger.warning("Erreur récupération activités Garmin pour %s: %s", date_str, e)
 
                 current_date += timedelta(days=1)
 
             # Mettre en cache
-            self.activity_cache[cache_key] = {
+            self.cache.data[cache_key] = {
                 'data': activities,
                 'timestamp': current_time
             }
 
             logger.info("Récupéré %s activités Garmin sur %s jours", len(activities), days)
             return activities
-   
+
         except Exception as e: # pylint: disable=broad-except
             logger.error("Erreur récupération activités Garmin: %s", e)
             return {}
@@ -468,7 +511,7 @@ class StravaGarminSync:
         if workout:
             garmin_name = workout.get('workoutName', garmin_name).strip() or garmin_name
             garmin_description = (
-                workout.get('description', garmin_description).strip() or 
+                workout.get('description', garmin_description).strip() or
                 garmin_description
             )
 
@@ -495,12 +538,12 @@ class StravaGarminSync:
 
     def update_strava_activity(self, activity_id: str, name: str, description: str) -> bool:
         """Met à jour une activité Strava"""
-        if self.dry_run:
-            logger.info("[DRY RUN] 🚫 Simuler mise à jour activité Strava %s: '%s' '%s'", 
+        if self.general.dry_run:
+            logger.info("[DRY RUN] 🚫 Simuler mise à jour activité Strava %s: '%s' '%s'",
                         activity_id, name, description)
             return True
         try:
-            self.strava_client.update_activity(
+            self.clients.strava.update_activity(
                 activity_id=int(activity_id),
                 name=name,
                 description=description
@@ -521,7 +564,7 @@ class StravaGarminSync:
         # --- Fin fenêtre horaire ---
 
         logger.info("🔄 Début de la synchronisation...")
-        if self.dry_run:
+        if self.general.dry_run:
             logger.info("⚠️ Mode DRY RUN activé : aucune modification ne sera faite sur Strava.")
 
         start_time = time.time()
@@ -541,8 +584,8 @@ class StravaGarminSync:
 
         synced_cache = set()
         try:
-            if os.path.exists(self.strava_cache_file):
-                with open(self.strava_cache_file, "r", encoding="utf-8") as f:
+            if os.path.exists(self.strava.cache_file):
+                with open(self.strava.cache_file, "r", encoding="utf-8") as f:
                     synced_cache = set(json.load(f))
         except Exception as e: # pylint: disable=broad-except
             logger.warning("Impossible de lire le cache de synchronisation: %s", e)
@@ -572,7 +615,7 @@ class StravaGarminSync:
         for strava_activity in strava_activities:
             try:
                 # Trouver l'activité Garmin correspondante
-                garmin_activity = self.find_matching_garmin_activity(strava_activity, 
+                garmin_activity = self.find_matching_garmin_activity(strava_activity,
                                                                     garmin_activities)
 
                 if not garmin_activity:
@@ -599,7 +642,7 @@ class StravaGarminSync:
                     logger.info("✅ '%s' déjà à jour", strava_activity.name)
                     skipped_count += 1
                     synced_cache.add(strava_activity.id)
-    
+
             except Exception as e: # pylint: disable=broad-except
                 logger.error("❌ Erreur sync activité '%s': %s", strava_activity.name, e)
                 errors_count += 1
@@ -607,7 +650,7 @@ class StravaGarminSync:
 
         # Sauvegarder le cache mis à jour après la boucle
         try:
-            with open(self.strava_cache_file, "w", encoding="utf-8") as f:
+            with open(self.strava.cache_file, "w", encoding="utf-8") as f:
                 json.dump(list(synced_cache), f, indent=2)
             logger.info("🗂️ Cache de synchronisation mise à jour")
         except Exception as e: # pylint: disable=broad-except
