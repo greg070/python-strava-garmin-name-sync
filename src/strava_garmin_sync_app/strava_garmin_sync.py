@@ -31,6 +31,7 @@ from .models import (
 )
 from .constants import GARMIN_TO_STRAVA_TYPE
 from .garmin_service import get_garmin_activities_for_period
+from .workout_formatter import build_workout_description
 from .strava_service import (
     get_recent_strava_activities as fetch_recent_strava,
     update_strava_activity as apply_strava_update,
@@ -409,17 +410,16 @@ class StravaGarminSync:
         garmin_activity: Dict
     ) -> tuple[bool, str, str]:
         """Détermine si une activité doit être mise à jour"""
-        garmin_name = garmin_activity.get('activityName', '').strip()
-        garmin_description = garmin_activity.get('description', '').strip()
+        garmin_name = (garmin_activity.get('activityName') or '').strip()
+        garmin_description = (garmin_activity.get('description') or '').strip()
 
-        # Prioriser le nom et la description du workout si disponible
+        # Prioriser le nom et la description du workout si disponible.
+        # La description est générée depuis la structure de la séance (allures
+        # cibles, répétitions) quand le workout ne porte qu'un slug technique.
         workout = garmin_activity.get('workout')
         if workout:
-            garmin_name = workout.get('workoutName', garmin_name).strip() or garmin_name
-            garmin_description = (
-                workout.get('description', garmin_description).strip() or
-                garmin_description
-            )
+            garmin_name = (workout.get('workoutName') or '').strip() or garmin_name
+            garmin_description = build_workout_description(workout) or garmin_description
 
         # Nettoyer les noms Strava par défaut génériques
         strava_name = strava_activity.name.strip()
@@ -522,8 +522,12 @@ class StravaGarminSync:
             counts["skipped"] += int(skipped)
             counts["errors"] += int(error)
 
-        # Sauvegarder le cache mis à jour après la boucle
-        self._save_synced_cache(synced_cache, sync_days)
+        # Sauvegarder le cache mis à jour après la boucle — sauf en dry run,
+        # sinon les activités seraient marquées synchronisées sans avoir été modifiées
+        if self.general.dry_run:
+            logger.info("[DRY RUN] 🚫 Cache de synchronisation non sauvegardé")
+        else:
+            self._save_synced_cache(synced_cache, sync_days)
 
         # Résumé
         logger.info("=" * 50)

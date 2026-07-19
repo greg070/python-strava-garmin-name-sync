@@ -11,6 +11,12 @@ from unittest.mock import patch
 from strava_garmin_sync_app import StravaGarminSync
 from strava_garmin_sync_app.models import ActivityData
 from strava_garmin_sync_app.garmin_service import _parse_garmin_start_time
+from strava_garmin_sync_app.workout_formatter import (
+    build_workout_description,
+    fmt_duration,
+    fmt_pace,
+    is_meaningful_description,
+)
 
 DUMMY_ENV = {
     'STRAVA_CLIENT_ID': 'dummy',
@@ -96,13 +102,36 @@ class TestStravaGarminSync(unittest.TestCase):
         garmin_activity = {
             'activityName': 'Bruxelles Course à pied',
             'description': '',
-            'workout': {'workoutName': 'Seuil 3x10min', 'description': 'Zone 4'},
+            'workout': {'workoutName': 'Seuil 3x10min', 'description': 'Zone 4 !'},
         }
         needs_update, new_name, new_desc = self.sync.should_update_activity(
             strava_activity, garmin_activity)
         self.assertTrue(needs_update)
         self.assertEqual(new_name, 'Seuil 3x10min')
-        self.assertEqual(new_desc, 'Zone 4')
+        self.assertEqual(new_desc, 'Zone 4 !')
+
+    def test_slug_workout_description_replaced_by_steps_text(self):
+        strava_activity = make_strava_activity(name='Morning Run')
+        garmin_activity = {
+            'activityName': 'Bruxelles Course à pied',
+            'description': '',
+            'workout': {
+                'workoutName': "7x3' Intervals Run",
+                'description': 'vo2max',
+                'workoutSegments': [{'workoutSteps': [
+                    {'type': 'ExecutableStepDTO',
+                     'stepType': {'stepTypeKey': 'warmup'},
+                     'endCondition': {'conditionTypeKey': 'time'},
+                     'endConditionValue': 900},
+                ]}],
+            },
+        }
+        needs_update, new_name, new_desc = self.sync.should_update_activity(
+            strava_activity, garmin_activity)
+        self.assertTrue(needs_update)
+        self.assertEqual(new_name, "7x3' Intervals Run")
+        self.assertEqual(new_desc,
+                         "Séance : 7x3' Intervals Run (vo2max)\n- Échauffement : 15 min")
 
     def test_description_only_change_never_triggers_update(self):
         """A user must be able to edit the Strava description after a sync
@@ -204,6 +233,60 @@ class TestStravaGarminSync(unittest.TestCase):
     def test_update_strava_activity_dry_run(self):
         self.sync.general.dry_run = True
         self.assertTrue(self.sync.update_strava_activity('123', 'Test', 'Desc'))
+
+
+class TestWorkoutFormatter(unittest.TestCase):
+    """Tests for the workout structure -> description text generation."""
+
+    def test_fmt_duration(self):
+        self.assertEqual(fmt_duration(45), '45 s')
+        self.assertEqual(fmt_duration(900), '15 min')
+        self.assertEqual(fmt_duration(1830), '30 min 30')
+        self.assertEqual(fmt_duration(4800), '1 h 20 min')
+
+    def test_fmt_pace(self):
+        # 3.0 m/s = 5:33/km
+        self.assertEqual(fmt_pace(3.0), '5:33/km')
+
+    def test_is_meaningful_description(self):
+        self.assertFalse(is_meaningful_description(''))
+        self.assertFalse(is_meaningful_description('progressive_run'))
+        self.assertFalse(is_meaningful_description('vo2max'))
+        self.assertTrue(is_meaningful_description('Séance seuil, rester en zone 4'))
+
+    def test_meaningful_description_is_copied(self):
+        workout = {'workoutName': 'Seuil', 'description': 'Bien rester en Z4 !',
+                   'workoutSegments': []}
+        self.assertEqual(build_workout_description(workout), 'Bien rester en Z4 !')
+
+    def test_repeat_group_rendering(self):
+        interval = {'type': 'ExecutableStepDTO',
+                    'stepType': {'stepTypeKey': 'interval'},
+                    'endCondition': {'conditionTypeKey': 'time'},
+                    'endConditionValue': 240,
+                    'targetType': {'workoutTargetTypeKey': 'pace.zone'},
+                    # m/s: 3.7 = 4:30/km, 3.5 = 4:46/km
+                    'targetValueOne': 3.5, 'targetValueTwo': 3.7}
+        recovery = {'type': 'ExecutableStepDTO',
+                    'stepType': {'stepTypeKey': 'recovery'},
+                    'endCondition': {'conditionTypeKey': 'time'},
+                    'endConditionValue': 60}
+        workout = {
+            'workoutName': "4x4' Tempo",
+            'description': 'threshold',
+            'workoutSegments': [{'workoutSteps': [
+                {'type': 'RepeatGroupDTO', 'numberOfIterations': 4,
+                 'workoutSteps': [interval, recovery]},
+            ]}],
+        }
+        text = build_workout_description(workout)
+        self.assertIn("Séance : 4x4' Tempo (threshold)", text)
+        self.assertIn('4 × (Effort : 4 min (allure 4:30/km à 4:46/km) '
+                      '+ Récupération : 1 min)', text)
+
+    def test_empty_workout_returns_none(self):
+        self.assertIsNone(build_workout_description(
+            {'workoutName': 'X', 'description': '', 'workoutSegments': []}))
 
 
 class TestParseGarminStartTime(unittest.TestCase):
