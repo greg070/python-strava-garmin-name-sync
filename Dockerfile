@@ -1,7 +1,7 @@
 FROM python:3.13-slim
 
 # Informations de l'image
-LABEL maintainer="your-email@example.com"
+LABEL maintainer="greg070"
 LABEL description="Application de synchronisation Strava-Garmin"
 
 # Variables d'environnement
@@ -21,26 +21,19 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copier le code de l'application (arborescence complète)
+# Copier le code de l'application
 COPY src/ /app/src/
 
-# Assurer la résolution des imports de type `from src...`
-ENV PYTHONPATH=/app
+# Résolution des imports du package (src layout)
+ENV PYTHONPATH=/app/src
 
-# Créer le répertoire pour les logs
-RUN mkdir -p /app/logs && mkdir -p /app/data
-
-# Changer la propriété des fichiers
-RUN chown -R app:app /app
+# Créer les répertoires pour les logs et données
+RUN mkdir -p /app/logs /app/data && chown -R app:app /app
 
 # Basculer vers l'utilisateur non-root
 USER app
 
-# Volume pour les logs
+# Volumes pour les logs et l'état persistant (tokens, cache)
 VOLUME ["/app/logs", "/app/data"]
 
-# Port d'exposition (optionnel, pour monitoring futur)
-EXPOSE 8080
-
-# Point d'entrée (exécuter le module, évite les imports relatifs cassés)
-ENTRYPOINT ["python", "-m", "src.strava_garmin_sync_app.strava_garmin_sync"]
+ENTRYPOINT ["python", "-m", "strava_garmin_sync_app.strava_garmin_sync"]
