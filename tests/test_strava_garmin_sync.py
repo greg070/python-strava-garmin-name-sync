@@ -10,7 +10,10 @@ from unittest.mock import patch
 
 from strava_garmin_sync_app import StravaGarminSync
 from strava_garmin_sync_app.models import ActivityData
-from strava_garmin_sync_app.garmin_service import _parse_garmin_start_time
+from strava_garmin_sync_app.garmin_service import (
+    _parse_garmin_start_time,
+    process_garmin_activity,
+)
 from strava_garmin_sync_app.workout_formatter import (
     build_workout_description,
     fmt_duration,
@@ -69,6 +72,12 @@ class TestStravaGarminSync(unittest.TestCase):
         self.sync.strava.token_expires_at = int(time.time()) + 3600
         self.assertFalse(self.sync.is_token_expired())
         self.sync.strava.token_expires_at = int(time.time()) - 10
+        self.assertTrue(self.sync.is_token_expired())
+
+    def test_is_token_expired_within_safety_margin(self):
+        # expires in 100 s: considered expired (5 min margin) to avoid
+        # expiry in the middle of a sync
+        self.sync.strava.token_expires_at = int(time.time()) + 100
         self.assertTrue(self.sync.is_token_expired())
 
     # --- should_update_activity ---
@@ -287,6 +296,28 @@ class TestWorkoutFormatter(unittest.TestCase):
     def test_empty_workout_returns_none(self):
         self.assertIsNone(build_workout_description(
             {'workoutName': 'X', 'description': '', 'workoutSegments': []}))
+
+
+class TestProcessGarminActivity(unittest.TestCase):
+    """Tests for Garmin activity normalization."""
+
+    def test_parsed_start_time_prefers_gmt(self):
+        activities = {}
+        activity = {
+            'activityId': 42,
+            'startTimeGMT': '2026-07-17 06:33:55',
+            'startTimeLocal': '2026-07-17 08:33:55',
+        }
+        process_garmin_activity(None, activities, activity)
+        self.assertEqual(activities['42']['parsed_start_time'],
+                         datetime(2026, 7, 17, 6, 33, 55))
+
+    def test_falls_back_to_local_time_without_gmt(self):
+        activities = {}
+        activity = {'activityId': 42, 'startTimeLocal': '2026-07-17 08:33:55'}
+        process_garmin_activity(None, activities, activity)
+        self.assertEqual(activities['42']['parsed_start_time'],
+                         datetime(2026, 7, 17, 8, 33, 55))
 
 
 class TestParseGarminStartTime(unittest.TestCase):

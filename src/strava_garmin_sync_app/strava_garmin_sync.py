@@ -7,6 +7,7 @@ Synchronise les noms et descriptions des activités Strava avec les données Gar
 import os
 import time
 import logging
+import logging.handlers
 from datetime import datetime
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
@@ -42,14 +43,19 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging():
-    """Configure logging to file and console. Call once at application startup."""
+    """Configure logging to a rotating file and console. Call once at startup."""
     os.makedirs('logs', exist_ok=True)
     os.makedirs('data', exist_ok=True)
     logging.basicConfig(
         level=os.getenv('LOG_LEVEL', 'INFO').upper(),
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('logs/strava_garmin_sync.log'),
+            logging.handlers.RotatingFileHandler(
+                'logs/strava_garmin_sync.log',
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding='utf-8',
+            ),
             logging.StreamHandler()
         ]
     )
@@ -293,8 +299,11 @@ class StravaGarminSync:
             return False
 
     def is_token_expired(self) -> bool:
-        """Vérifie si le token Strava est expiré (basé sur l'expiration locale)"""
-        return time.time() >= self.strava.token_expires_at
+        """Vérifie si le token Strava est expiré ou sur le point de l'être.
+
+        Marge de 5 minutes pour éviter qu'il expire en plein milieu d'un sync.
+        """
+        return time.time() >= self.strava.token_expires_at - 300
 
     def refresh_strava_token(self):
         """Rafraîchit le token Strava"""

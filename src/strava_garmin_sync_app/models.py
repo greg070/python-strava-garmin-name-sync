@@ -12,7 +12,7 @@ class ActivityData:
     """Classe pour stocker les données d'activité"""
     id: str
     name: str
-    start_date: datetime
+    start_date: datetime  # naive UTC, comparé au startTimeGMT Garmin
     type: str
     garmin_id: Optional[str] = None
     has_polyline: bool = False

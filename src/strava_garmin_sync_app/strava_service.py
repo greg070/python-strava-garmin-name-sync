@@ -1,7 +1,7 @@
 """Strava service helpers for fetching and updating activities."""
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from .models import ActivityData
@@ -9,19 +9,28 @@ from .models import ActivityData
 logger = logging.getLogger(__name__)
 
 
+def _to_naive_utc(value):
+    """Normalize a datetime to naive UTC for timezone-insensitive comparisons."""
+    if hasattr(value, 'tzinfo') and value.tzinfo:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 def get_recent_strava_activities(strava_client, days: int = 7) -> List[ActivityData]:
-    """Fetch recent Strava activities and map to ActivityData list."""
-    after_date = datetime.now() - timedelta(days=days)
+    """Fetch recent Strava activities and map to ActivityData list.
+
+    start_date is normalized to naive UTC so matching against Garmin
+    (startTimeGMT) is insensitive to timezones and DST shifts.
+    """
+    after_date = datetime.now(timezone.utc) - timedelta(days=days)
     activities = strava_client.get_activities(after=after_date, limit=200)
 
     results: List[ActivityData] = []
     for activity in activities:
-        start_date = activity.start_date_local
-        if hasattr(start_date, 'replace') and start_date.tzinfo:
-            start_date = start_date.replace(tzinfo=None)
+        start_date = _to_naive_utc(activity.start_date)
 
         logger.info(
-            "Strava Activity: ID=%s, Name='%s', Start=%s, Type=%s, sport_type=%s",
+            "Strava Activity: ID=%s, Name='%s', Start(UTC)=%s, Type=%s, sport_type=%s",
             activity.id,
             activity.name,
             start_date,
@@ -85,12 +94,9 @@ def get_strava_activity(strava_client, activity_id: str):
     """
     try:
         act = strava_client.get_activity(int(activity_id))
-        # Key info + resource_state for diagnostics
-        start_date = getattr(act, "start_date_local", None)
-        if hasattr(start_date, "replace") and getattr(start_date, "tzinfo", None):
-            start_date = start_date.replace(tzinfo=None)
+        start_date = _to_naive_utc(getattr(act, "start_date", None))
         logger.info(
-            "Strava Detailed: ID=%s, Name='%s', Start=%s, Type=%s, sport_type=%s",
+            "Strava Detailed: ID=%s, Name='%s', Start(UTC)=%s, Type=%s, sport_type=%s",
             activity_id,
             getattr(act, "name", None),
             start_date,

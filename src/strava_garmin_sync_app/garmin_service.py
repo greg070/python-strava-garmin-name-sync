@@ -53,7 +53,14 @@ def process_garmin_activity(garmin_client, activities: Dict[str, Dict], activity
     if not activity_id:
         return
 
-    parsed_start = _parse_garmin_start_time(activity.get('startTimeLocal', ''))
+    # Prefer GMT so matching against Strava (start_date in UTC) is insensitive
+    # to timezones and DST; fall back to local time if GMT is missing.
+    start_time_str = activity.get('startTimeGMT') or activity.get('startTimeLocal') or ''
+    if not activity.get('startTimeGMT'):
+        logger.warning(
+            "Activité Garmin %s sans startTimeGMT, repli sur l'heure locale "
+            "(le matching peut échouer)", activity_id)
+    parsed_start = _parse_garmin_start_time(start_time_str)
     if not parsed_start:
         return
     activity['parsed_start_time'] = parsed_start
