@@ -1,12 +1,25 @@
 """Constants used across the sync application."""
-# Mapping Garmin typeKey to Strava type
+# Mapping Garmin typeKey to Strava type (lowercased Strava activity type)
 GARMIN_TO_STRAVA_TYPE = {
     "running": "run",
+    "treadmill_running": "run",
+    "trail_running": "run",
+    "track_running": "run",
     "cycling": "ride",
+    "road_biking": "ride",
+    "mountain_biking": "ride",
+    "gravel_cycling": "ride",
+    "indoor_cycling": "ride",
+    "virtual_ride": "virtualride",
     "swimming": "swim",
+    "lap_swimming": "swim",
+    "open_water_swimming": "swim",
     "walking": "walk",
     "hiking": "hike",
+    "strength_training": "weighttraining",
+    "yoga": "yoga",
     "multi_sport": "workout",
     "fitness_equipment": "workout",
+    "indoor_cardio": "workout",
     "other": "workout",
 }

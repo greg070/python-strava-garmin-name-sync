@@ -9,9 +9,9 @@ import time
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict
+from zoneinfo import ZoneInfo
 import json
 import schedule
-import pytz
 from stravalib import Client as StravaClient
 from garth.exc import GarthHTTPError
 
@@ -34,21 +34,24 @@ from .garmin_service import get_garmin_activities_for_period
 from .strava_service import (
     get_recent_strava_activities as fetch_recent_strava,
     update_strava_activity as apply_strava_update,
+    wait_until_processed,
 )
 
-os.makedirs('logs', exist_ok=True)
-os.makedirs('data', exist_ok=True)
-
-# Configuration du logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/strava_garmin_sync.log'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
+
+
+def setup_logging():
+    """Configure logging to file and console. Call once at application startup."""
+    os.makedirs('logs', exist_ok=True)
+    os.makedirs('data', exist_ok=True)
+    logging.basicConfig(
+        level=os.getenv('LOG_LEVEL', 'INFO').upper(),
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/strava_garmin_sync.log'),
+            logging.StreamHandler()
+        ]
+    )
 
 
 class StravaGarminSync:
@@ -56,7 +59,10 @@ class StravaGarminSync:
     def __init__(self):
         # General
         self.general = GeneralConfig(
-            dry_run=os.getenv('DRY_RUN', 'false').lower() in ['1', 'true', 'yes']
+            dry_run=os.getenv('DRY_RUN', 'false').lower() in ['1', 'true', 'yes'],
+            sync_tz=os.getenv('SYNC_TZ', 'Europe/Brussels'),
+            quiet_hours_start=int(os.getenv('QUIET_HOURS_START', '0')),
+            quiet_hours_end=int(os.getenv('QUIET_HOURS_END', '6')),
         )
 
         # Strava
@@ -108,16 +114,24 @@ class StravaGarminSync:
                 logger.warning("Impossible de lire %s: %s",self.strava.token_path,err)
 
     def validate_config(self):
-        """Valide la configuration"""
-        required_vars = [
-            'STRAVA_CLIENT_ID', 'STRAVA_CLIENT_SECRET', 
-            'STRAVA_ACCESS_TOKEN', 'STRAVA_REFRESH_TOKEN',
-            'GARMIN_EMAIL', 'GARMIN_PASSWORD'
-        ]
+        """Valide la configuration (env ou fichier de tokens)"""
+        missing = []
+        if not self.strava.client_id:
+            missing.append('STRAVA_CLIENT_ID')
+        if not self.strava.client_secret:
+            missing.append('STRAVA_CLIENT_SECRET')
+        # Les tokens peuvent venir de l'env ou de data/.strava_token.json
+        if not self.strava.access_token:
+            missing.append(f'STRAVA_ACCESS_TOKEN (env ou {self.strava.token_path})')
+        if not self.strava.refresh_token:
+            missing.append(f'STRAVA_REFRESH_TOKEN (env ou {self.strava.token_path})')
+        if not self.garmin.email:
+            missing.append('GARMIN_EMAIL')
+        if not self.garmin.password:
+            missing.append('GARMIN_PASSWORD')
 
-        missing = [var for var in required_vars if not os.getenv(var)]
         if missing:
-            raise ValueError(f"Variables d'environnement manquantes: {', '.join(missing)}")
+            raise ValueError(f"Configuration manquante: {', '.join(missing)}")
 
         logger.info("Configuration validée")
 
@@ -157,14 +171,14 @@ class StravaGarminSync:
         self,
         strava_activity: ActivityData,
         garmin_activities: Dict[str, Dict],
-        synced_cache: set,
+        synced_cache: Dict[str, float],
     ) -> tuple[bool, bool, bool]:
         """Process a single Strava activity sync. Returns (updated, skipped, error)."""
         try:
             garmin_activity = self.find_matching_garmin_activity(strava_activity, garmin_activities)
             if not garmin_activity:
                 logger.info("⏭️ Aucune activité Garmin trouvée pour: '%s'", strava_activity.name)
-                synced_cache.add(strava_activity.id)
+                synced_cache[strava_activity.id] = time.time()
                 return False, True, False
 
             needs_update, new_name, new_description = self.should_update_activity(
@@ -173,12 +187,24 @@ class StravaGarminSync:
 
             if not needs_update:
                 logger.info("✅ '%s' déjà à jour", strava_activity.name)
-                synced_cache.add(strava_activity.id)
+                synced_cache[strava_activity.id] = time.time()
                 return False, True, False
+
+            # Wait until Strava has fully processed the activity before updating.
+            # Indoor/manual activities never get a map polyline, so waiting for one
+            # would block max_retries * delay for nothing.
+            if strava_activity.has_polyline:
+                logger.info("Activité %s déjà traitée par Strava (polyline présente)",
+                            strava_activity.id)
+            elif strava_activity.trainer or strava_activity.manual:
+                logger.info("Activité %s indoor/manuelle, pas d'attente de traitement",
+                            strava_activity.id)
+            else:
+                wait_until_processed(self.clients.strava, int(strava_activity.id))
 
             if self.update_strava_activity(strava_activity.id, new_name, new_description):
                 logger.info("🔄 '%s' → '%s'", strava_activity.name, new_name)
-                synced_cache.add(strava_activity.id)
+                synced_cache[strava_activity.id] = time.time()
                 return True, False, False
 
             return False, False, True
@@ -187,22 +213,31 @@ class StravaGarminSync:
             logger.error("❌ Erreur sync activité '%s': %s", strava_activity.name, e)
             return False, False, True
 
-    def _load_synced_cache(self) -> set:
-        """Load synced cache set from file, return empty set on error."""
+    def _load_synced_cache(self) -> Dict[str, float]:
+        """Load synced cache mapping activity id -> sync timestamp.
+
+        Supports the legacy format (plain list of ids) by assigning the current time.
+        """
         try:
             if os.path.exists(self.strava.cache_file):
                 with open(self.strava.cache_file, "r", encoding="utf-8") as f:
-                    return set(json.load(f))
+                    raw = json.load(f)
+                if isinstance(raw, list):
+                    now = time.time()
+                    return {str(activity_id): now for activity_id in raw}
+                return {str(k): float(v) for k, v in raw.items()}
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Impossible de lire le cache de synchronisation: %s", e)
-        return set()
+        return {}
 
-    def _save_synced_cache(self, synced_cache: set) -> None:
-        """Persist synced cache set to file."""
+    def _save_synced_cache(self, synced_cache: Dict[str, float], sync_days: int) -> None:
+        """Persist synced cache, dropping entries older than twice the sync window."""
         try:
+            cutoff = time.time() - 2 * sync_days * 86400
+            pruned = {k: v for k, v in synced_cache.items() if v >= cutoff}
             with open(self.strava.cache_file, "w", encoding="utf-8") as f:
-                json.dump(list(synced_cache), f, indent=2)
-            logger.info("🗂️ Cache de synchronisation mise à jour")
+                json.dump(pruned, f, indent=2)
+            logger.info("🗂️ Cache de synchronisation mis à jour (%s entrées)", len(pruned))
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Impossible de sauvegarder le cache de synchronisation: %s", e)
 
@@ -279,10 +314,6 @@ class StravaGarminSync:
                 self.clients.strava.refresh_token = self.strava.refresh_token
                 self.clients.strava.token_expires = self.strava.token_expires_at
 
-            print("Access Token:", token_response['access_token'])
-            print("Refresh Token:", token_response['refresh_token'])
-            print("Expires At:", token_response['expires_at'])
-
             # Sauvegarder le refresh token dans un fichier pour persistance
             try:
                 with open(self.strava.token_path, "w", encoding="utf-8") as f:
@@ -291,7 +322,7 @@ class StravaGarminSync:
                         "refresh_token": self.strava.refresh_token,
                         "expires_at": self.strava.token_expires_at
                     }, f, indent=2)
-                logger.info("Token Strava sauvegardé dans strava_token.json")
+                logger.info("Token Strava sauvegardé dans %s", self.strava.token_path)
             except Exception as file_err: # pylint: disable=broad-except
                 logger.warning("Impossible de sauvegarder le token Strava: %s",file_err)
 
@@ -328,38 +359,39 @@ class StravaGarminSync:
         best_match = None
         min_time_diff = float('inf')
 
-        for _, garmin_activity in garmin_activities.items():
+        # Use .value if available, else fallback to str()
+        strava_type = getattr(strava_activity.type, 'value', None)
+        if not strava_type:
+            strava_type = str(strava_activity.type)
+        strava_type = strava_type.lower()
+
+        for garmin_activity in garmin_activities.values():
             if 'parsed_start_time' not in garmin_activity:
                 continue
+
+            # --- Activity type check with mapping (before time comparison, so a
+            # closer activity of the wrong type cannot shadow the right one) ---
+            garmin_type = garmin_activity.get('activityType', {}).get('typeKey', '').lower()
+            mapped_strava_type = GARMIN_TO_STRAVA_TYPE.get(garmin_type, garmin_type)
+            if mapped_strava_type and strava_type and mapped_strava_type != strava_type:
+                logger.debug(
+                    "Type non correspondant: Garmin '%s' (Strava attend '%s', "
+                    "mapping Garmin→Strava: '%s')",
+                    garmin_type,
+                    strava_type,
+                    mapped_strava_type
+                )
+                continue
+            # ---------------------------
 
             garmin_start = garmin_activity['parsed_start_time']
 
             # Calculer la différence de temps
             time_diff = abs((garmin_start - strava_activity.start_date).total_seconds())
 
-            # Tolérance de 1 minutes (60 secondes)
+            # Tolérance de 1 minute (60 secondes)
             if time_diff < 60 and time_diff < min_time_diff:
                 min_time_diff = time_diff
-
-                # --- Activity type check with mapping ---
-                garmin_type = garmin_activity.get('activityType', {}).get('typeKey', '').lower()
-                # Use .value if available, else fallback to str()
-                strava_type = getattr(strava_activity.type, 'value', None)
-                if not strava_type:
-                    strava_type = str(strava_activity.type)
-                strava_type = strava_type.lower()
-                mapped_strava_type = GARMIN_TO_STRAVA_TYPE.get(garmin_type, garmin_type)
-                if mapped_strava_type and strava_type and mapped_strava_type != strava_type:
-                    logger.info(
-                        "Type non correspondant: Garmin '%s' (Strava attend '%s', "
-                        "mapping Garmin→Strava: '%s')", 
-                        garmin_type,
-                        strava_type,
-                        mapped_strava_type
-                    )
-                    continue
-                # ---------------------------
-
                 best_match = garmin_activity
 
         if best_match:
@@ -404,7 +436,10 @@ class StravaGarminSync:
                 new_name = garmin_name
                 needs_update = True
 
-        # Mettre à jour la description si Garmin a une description et qu'elle diffère
+        # La description Garmin n'est appliquée que lorsqu'une mise à jour du nom est
+        # nécessaire. Une différence de description seule ne déclenche jamais de sync :
+        # l'utilisateur doit pouvoir modifier sa description sur Strava après coup
+        # sans qu'elle soit écrasée.
         if garmin_description:
             new_description = garmin_description
 
@@ -421,10 +456,14 @@ class StravaGarminSync:
         )
     def sync_activities(self):
         """Synchronise les activités entre Strava et Garmin"""
-        # --- Fenêtre horaire BE ---
-        if 0 <= datetime.now(pytz.timezone("Europe/Brussels")).hour < 6:
+        # --- Fenêtre horaire (heures creuses configurables) ---
+        local_hour = datetime.now(ZoneInfo(self.general.sync_tz)).hour
+        if self.general.quiet_hours_start <= local_hour < self.general.quiet_hours_end:
             logger.info(
-                "⏳ Fenêtre de synchronisation fermée (minuit-6h BE). Sync ignorée."
+                "⏳ Fenêtre de synchronisation fermée (%sh-%sh %s). Sync ignorée.",
+                self.general.quiet_hours_start,
+                self.general.quiet_hours_end,
+                self.general.sync_tz,
             )
             return True
         # --- Fin fenêtre horaire ---
@@ -484,7 +523,7 @@ class StravaGarminSync:
             counts["errors"] += int(error)
 
         # Sauvegarder le cache mis à jour après la boucle
-        self._save_synced_cache(synced_cache)
+        self._save_synced_cache(synced_cache, sync_days)
 
         # Résumé
         logger.info("=" * 50)
@@ -527,11 +566,12 @@ class StravaGarminSync:
 
 def main():
     """Point d'entrée principal"""
+    setup_logging()
     try:
         # Banner
-        print("=" * 60)
-        print("🏃 SYNCHRONISATEUR STRAVA-GARMIN")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("🏃 SYNCHRONISATEUR STRAVA-GARMIN")
+        logger.info("=" * 60)
 
         sync_app = StravaGarminSync()
 

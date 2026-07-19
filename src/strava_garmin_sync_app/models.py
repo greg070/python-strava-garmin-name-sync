@@ -15,12 +15,18 @@ class ActivityData:
     start_date: datetime
     type: str
     garmin_id: Optional[str] = None
+    has_polyline: bool = False
+    trainer: bool = False
+    manual: bool = False
 
 
 @dataclass
 class GeneralConfig:
     """Configuration générale de l'application"""
     dry_run: bool
+    sync_tz: str = "Europe/Brussels"
+    quiet_hours_start: int = 0
+    quiet_hours_end: int = 6
 
 
 @dataclass

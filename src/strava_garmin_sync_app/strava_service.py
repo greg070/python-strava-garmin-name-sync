@@ -1,5 +1,6 @@
 """Strava service helpers for fetching and updating activities."""
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import List
 
@@ -27,6 +28,10 @@ def get_recent_strava_activities(strava_client, days: int = 7) -> List[ActivityD
             activity.type.root,
             activity.sport_type.root,
         )
+        has_polyline = bool(activity.map and activity.map.summary_polyline)
+        if has_polyline:
+            logger.info("Strava Activity %s has a map polyline", activity.id)
+
         logger.debug("Strava Activity: %s", activity)
 
         results.append(
@@ -35,6 +40,9 @@ def get_recent_strava_activities(strava_client, days: int = 7) -> List[ActivityD
                 name=activity.name or "",
                 start_date=start_date,
                 type=activity.type.root or "Unknown",
+                has_polyline=has_polyline,
+                trainer=bool(getattr(activity, "trainer", False)),
+                manual=bool(getattr(activity, "manual", False)),
             )
         )
     logger.info("Récupéré %s activités Strava", len(results))
@@ -68,3 +76,63 @@ def update_strava_activity(
     except Exception as e:  # pylint: disable=broad-except
         logger.error("❌ Erreur mise à jour activité Strava %s: %s", activity_id, e)
         return False
+
+
+def get_strava_activity(strava_client, activity_id: str):
+    """Fetch a single Strava activity (detailed) by ID.
+
+    Returns the detailed activity object from stravalib on success, or None on error.
+    """
+    try:
+        act = strava_client.get_activity(int(activity_id))
+        # Key info + resource_state for diagnostics
+        start_date = getattr(act, "start_date_local", None)
+        if hasattr(start_date, "replace") and getattr(start_date, "tzinfo", None):
+            start_date = start_date.replace(tzinfo=None)
+        logger.info(
+            "Strava Detailed: ID=%s, Name='%s', Start=%s, Type=%s, sport_type=%s",
+            activity_id,
+            getattr(act, "name", None),
+            start_date,
+            getattr(getattr(act, "type", None), "root", None),
+            getattr(getattr(act, "sport_type", None), "root", None),
+        )
+        if act.map and act.map.summary_polyline:
+            logger.info("Strava Activity %s has a map polyline", activity_id)
+        logger.debug("Fetched Strava activity %s: %s", activity_id, act)
+        return act
+    except Exception as e:  # pylint: disable=broad-except
+        logger.error("❌ Erreur récupération activité Strava %s: %s", activity_id, e)
+        return None
+
+
+def wait_until_processed(strava_client, activity_id: int, max_retries: int = 5, delay: int = 120):
+    """
+    Poll Strava until the activity is fully processed (map, achievements, etc. available).
+
+    Args:
+        strava_client (Client): Authenticated stravalib client.
+        activity_id (int): The Strava activity ID.
+        max_retries (int): Number of polling attempts before giving up.
+        delay (int): Delay in seconds between retries.
+
+    Returns:
+        Activity: The processed activity object, the last fetched one if still
+        unprocessed, or None if it could never be fetched.
+    """
+    activity = None
+    for attempt in range(max_retries):
+        activity = get_strava_activity(strava_client, activity_id)
+
+        # Check if the activity looks "processed"
+        if activity is not None and activity.map and activity.map.summary_polyline:
+            logger.info("✅ Activity %s processed after %d attempts.", activity_id, attempt + 1)
+            return activity
+
+        logger.info("⏳ Activity %s not ready (attempt %d/%d). Retrying in %s seconds...",
+                    activity_id, attempt + 1, max_retries, delay)
+        time.sleep(delay)
+
+    logger.warning("⚠️ Activity %s still not fully processed after %d attempts.",
+                   activity_id, max_retries)
+    return activity
