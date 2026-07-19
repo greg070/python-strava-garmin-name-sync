@@ -248,6 +248,14 @@ class StravaGarminSync:
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Impossible de sauvegarder le cache de synchronisation: %s", e)
 
+    def mark_activities_synced(self, activity_ids, sync_days: int) -> None:
+        """Add activity ids to the persisted synced cache (used by backfill)."""
+        synced_cache = self._load_synced_cache()
+        now = time.time()
+        for activity_id in activity_ids:
+            synced_cache[str(activity_id)] = now
+        self._save_synced_cache(synced_cache, sync_days)
+
     def init_garmin_client(self) -> bool:
         """Initialise le client Garmin"""
         try:

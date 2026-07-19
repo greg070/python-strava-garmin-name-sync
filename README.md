@@ -210,6 +210,21 @@ For more details, set in your `.env`:
 LOG_LEVEL=DEBUG
 ```
 
+## Backfill (one-shot)
+
+Apply workout names and structured descriptions to past activities,
+bypassing the synced cache:
+
+```bash
+python -m strava_garmin_sync_app.backfill                 # dry run, last 7 days
+python -m strava_garmin_sync_app.backfill --apply         # actually write
+python -m strava_garmin_sync_app.backfill --start 2026-06-01 --end 2026-06-30 --apply
+```
+
+Safety guards: only activities matched to a planned Garmin workout are
+considered, and an activity whose Strava description was hand-written is
+never touched.
+
 ## Development
 
 ```bash

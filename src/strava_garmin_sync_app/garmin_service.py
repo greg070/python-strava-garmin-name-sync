@@ -70,20 +70,26 @@ def process_garmin_activity(garmin_client, activities: Dict[str, Dict], activity
 
 
 def get_garmin_activities_for_period(garmin_client, cache, days: int = 7) -> Dict[str, Dict]:
-    """Fetch all Garmin activities for a date range using a simple in-memory cache."""
-    cache_key = f"garmin_activities_{days}"
+    """Fetch all Garmin activities for the last `days` days."""
+    end_date = datetime.now()
+    return get_garmin_activities_between(
+        garmin_client, cache, end_date - timedelta(days=days), end_date)
+
+
+def get_garmin_activities_between(garmin_client, cache, start_date, end_date) -> Dict[str, Dict]:
+    """Fetch all Garmin activities between two dates using a simple in-memory cache."""
+    cache_key = f"garmin_activities_{start_date:%Y-%m-%d}_{end_date:%Y-%m-%d}"
     current_time = time.time()
 
     cached = cache.data.get(cache_key)
     if cached and (current_time - cached.get('timestamp', 0) < cache.duration):
-        logger.info("Utilisation du cache activités Garmin (%s jours)", days)
+        logger.info("Utilisation du cache activités Garmin (%s)", cache_key)
         return cached.get('data', {})
 
     activities: Dict[str, Dict] = {}
-    start_date = datetime.now() - timedelta(days=days)
     current_date = start_date
 
-    while current_date <= datetime.now():
+    while current_date <= end_date:
         date_str = current_date.strftime('%Y-%m-%d')
         try:
             daily = garmin_client.get_activities_by_date(date_str, date_str)
@@ -99,7 +105,8 @@ def get_garmin_activities_for_period(garmin_client, cache, days: int = 7) -> Dic
         'data': activities,
         'timestamp': current_time,
     }
-    logger.info("Récupéré %s activités Garmin sur %s jours", len(activities), days)
+    logger.info("Récupéré %s activités Garmin entre %s et %s",
+                len(activities), f"{start_date:%Y-%m-%d}", f"{end_date:%Y-%m-%d}")
     return activities
 
 

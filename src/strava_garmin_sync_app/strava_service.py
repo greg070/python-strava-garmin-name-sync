@@ -17,13 +17,21 @@ def _to_naive_utc(value):
 
 
 def get_recent_strava_activities(strava_client, days: int = 7) -> List[ActivityData]:
-    """Fetch recent Strava activities and map to ActivityData list.
+    """Fetch recent Strava activities and map to ActivityData list."""
+    after_date = datetime.now(timezone.utc) - timedelta(days=days)
+    return get_strava_activities_between(strava_client, after_date, None)
+
+
+def get_strava_activities_between(strava_client, after_dt, before_dt) -> List[ActivityData]:
+    """Fetch Strava activities between two datetimes (before_dt may be None).
 
     start_date is normalized to naive UTC so matching against Garmin
     (startTimeGMT) is insensitive to timezones and DST shifts.
     """
-    after_date = datetime.now(timezone.utc) - timedelta(days=days)
-    activities = strava_client.get_activities(after=after_date, limit=200)
+    kwargs = {"after": after_dt, "limit": 200}
+    if before_dt is not None:
+        kwargs["before"] = before_dt
+    activities = strava_client.get_activities(**kwargs)
 
     results: List[ActivityData] = []
     for activity in activities:

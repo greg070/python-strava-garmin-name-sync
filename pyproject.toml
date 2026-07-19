@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 strava-garmin-sync = "strava_garmin_sync_app.strava_garmin_sync:main"
+strava-garmin-backfill = "strava_garmin_sync_app.backfill:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

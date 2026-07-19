@@ -5,10 +5,14 @@ import os
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
 from strava_garmin_sync_app import StravaGarminSync
+from strava_garmin_sync_app.backfill import (
+    compute_backfill_update,
+    parse_args as parse_backfill_args,
+)
 from strava_garmin_sync_app.models import ActivityData
 from strava_garmin_sync_app.garmin_service import (
     _parse_garmin_start_time,
@@ -296,6 +300,47 @@ class TestWorkoutFormatter(unittest.TestCase):
     def test_empty_workout_returns_none(self):
         self.assertIsNone(build_workout_description(
             {'workoutName': 'X', 'description': '', 'workoutSegments': []}))
+
+
+class TestBackfill(unittest.TestCase):
+    """Tests for the backfill decision guards and CLI defaults."""
+
+    def test_hand_written_description_is_never_touched(self):
+        do_update, reason = compute_backfill_update(
+            'Superbe sortie avec le club !', True, 'Séance : X\n- Effort : 10 min')
+        self.assertFalse(do_update)
+        self.assertIn('personnalisée', reason)
+
+    def test_slug_description_gets_updated(self):
+        do_update, reason = compute_backfill_update(
+            'vo2max', False, 'Séance : X\n- Effort : 10 min')
+        self.assertTrue(do_update)
+        self.assertEqual(reason, 'description')
+
+    def test_empty_description_and_name_change(self):
+        do_update, reason = compute_backfill_update(
+            '', True, 'Séance : X\n- Effort : 10 min')
+        self.assertTrue(do_update)
+        self.assertEqual(reason, 'nom + description')
+
+    def test_already_up_to_date(self):
+        text = 'Séance : X\n- Effort : 10 min'
+        do_update, _ = compute_backfill_update(text, False, text)
+        # le texte généré contient espaces/accents → "meaningful", donc protégé
+        self.assertFalse(do_update)
+
+    def test_parse_args_defaults_to_last_seven_days(self):
+        args = parse_backfill_args([])
+        self.assertEqual(args.end, date.today())
+        self.assertEqual(args.start, date.today() - timedelta(days=7))
+        self.assertFalse(args.apply)
+
+    def test_parse_args_explicit_range(self):
+        args = parse_backfill_args(
+            ['--start', '2026-06-01', '--end', '2026-06-30', '--apply'])
+        self.assertEqual(args.start, date(2026, 6, 1))
+        self.assertEqual(args.end, date(2026, 6, 30))
+        self.assertTrue(args.apply)
 
 
 class TestProcessGarminActivity(unittest.TestCase):
