@@ -5,7 +5,8 @@ import os
 import tempfile
 import time
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from strava_garmin_sync_app import StravaGarminSync
@@ -18,8 +19,12 @@ from strava_garmin_sync_app.garmin_service import (
     _parse_garmin_start_time,
     process_garmin_activity,
 )
+from strava_garmin_sync_app.status_server import is_healthy, render_html
 from strava_garmin_sync_app.workout_formatter import (
+    build_execution_report,
+    build_metrics_line,
     build_workout_description,
+    flatten_steps,
     fmt_duration,
     fmt_pace,
     is_meaningful_description,
@@ -302,6 +307,109 @@ class TestWorkoutFormatter(unittest.TestCase):
             {'workoutName': 'X', 'description': '', 'workoutSegments': []}))
 
 
+def make_structured_workout():
+    """Warmup + 2x(interval+recovery) + cooldown, with pace targets in m/s."""
+    def step(key, seconds, low=None, high=None):
+        s = {'type': 'ExecutableStepDTO',
+             'stepType': {'stepTypeKey': key},
+             'endCondition': {'conditionTypeKey': 'time'},
+             'endConditionValue': seconds}
+        if low and high:
+            s['targetType'] = {'workoutTargetTypeKey': 'pace.zone'}
+            s['targetValueOne'], s['targetValueTwo'] = low, high
+        return s
+
+    return {
+        'workoutName': 'Test 2x4',
+        'description': 'threshold',
+        'workoutSegments': [{'workoutSteps': [
+            step('warmup', 900, 2.6, 2.9),        # ~5:45-6:25/km
+            {'type': 'RepeatGroupDTO', 'numberOfIterations': 2,
+             'workoutSteps': [
+                 step('interval', 240, 3.4, 3.7),  # ~4:30-4:54/km
+                 step('recovery', 60, 2.5, 2.7),
+             ]},
+            step('cooldown', 600, 2.5, 2.7),
+        ]}],
+    }
+
+
+def lap(speed):
+    return SimpleNamespace(average_speed=speed)
+
+
+class TestExecutionReport(unittest.TestCase):
+    """Tests for the planned-vs-executed comparison."""
+
+    def test_flatten_expands_repeats(self):
+        steps = flatten_steps(make_structured_workout())
+        self.assertEqual([s['key'] for s in steps],
+                         ['warmup', 'interval', 'recovery', 'interval',
+                          'recovery', 'cooldown'])
+        # both intervals belong to the same repeat group
+        self.assertEqual(steps[1]['group'], steps[3]['group'])
+        self.assertIsNone(steps[0]['group'])
+
+    def test_report_on_target(self):
+        # warmup 6:00, 2 intervals 4:40, recoveries slow, cooldown 6:20
+        laps = [lap(2.78), lap(3.57), lap(2.2), lap(3.55), lap(2.3), lap(2.63)]
+        lines = build_execution_report(make_structured_workout(), laps)
+        self.assertEqual(lines[0], 'Réalisé :')
+        self.assertIn('Échauffement : 6:00/km ✅', lines[1])
+        self.assertIn('2 × Effort : 4:40 ✅ · 4:42 ✅', lines[2])
+        # recoveries listed without verdict (slow recovery is fine)
+        self.assertIn('2 × Récupération', lines[3])
+        self.assertNotIn('⚠️', lines[3])
+        self.assertIn('Retour au calme', lines[4])
+
+    def test_report_flags_missed_target(self):
+        # second interval at 5:15/km, way slower than the 4:30-4:54 target
+        laps = [lap(2.78), lap(3.57), lap(2.2), lap(3.17), lap(2.3), lap(2.63)]
+        lines = build_execution_report(make_structured_workout(), laps)
+        self.assertIn('⚠️', lines[2])
+
+    def test_report_none_when_lap_count_mismatch(self):
+        self.assertIsNone(
+            build_execution_report(make_structured_workout(), [lap(2.8), lap(3.5)]))
+
+    def test_metrics_line(self):
+        activity = {'aerobicTrainingEffect': 3.6, 'anaerobicTrainingEffect': 1.7,
+                    'activityTrainingLoad': 148.5, 'vO2MaxValue': 53.0}
+        line = build_metrics_line(activity, recovery_minutes=1513)
+        self.assertEqual(
+            line, '📊 TE 3.6 aérobie / 1.7 anaérobie · Charge 148 · VO2max 53 · Récup 25 h')
+
+    def test_metrics_line_empty_activity(self):
+        self.assertIsNone(build_metrics_line({}))
+
+
+class TestStatusServer(unittest.TestCase):
+    """Tests for the status page helpers."""
+
+    def test_health_from_last_sync_age(self):
+        fresh = {'last_sync': datetime.now(timezone.utc).isoformat()}
+        stale = {'last_sync': (datetime.now(timezone.utc)
+                               - timedelta(hours=5)).isoformat()}
+        self.assertTrue(is_healthy(fresh, 3 * 3600))
+        self.assertFalse(is_healthy(stale, 3 * 3600))
+        self.assertFalse(is_healthy({}, 3 * 3600))
+
+    def test_render_html_contains_sections(self):
+        status = {
+            'last_sync': datetime.now(timezone.utc).isoformat(),
+            'results': {'updates': 2, 'skipped': 1, 'cached_ignored': 3, 'errors': 0},
+            'updated_activities': ["7x3' Intervals Run"],
+            'readiness': {'score': 61, 'level': 'MODERATE', 'recovery_minutes': 1513},
+            'upcoming_workouts': [{'date': '2026-07-21', 'title': '1h Progressive Run'}],
+            'gear': [{'name': 'ASICS Gel pursue 10 bleu', 'distance_km': 410.3}],
+        }
+        page = render_html(status)
+        self.assertIn("7x3&#x27; Intervals Run", page)
+        self.assertIn('1h Progressive Run', page)
+        self.assertIn('25 h', page)
+        self.assertIn('410 km', page)
+
+
 class TestBackfill(unittest.TestCase):
     """Tests for the backfill decision guards and CLI defaults."""
 
@@ -316,6 +424,17 @@ class TestBackfill(unittest.TestCase):
             'vo2max', False, 'Séance : X\n- Effort : 10 min')
         self.assertTrue(do_update)
         self.assertEqual(reason, 'description')
+
+    def test_app_generated_description_stays_replaceable(self):
+        # a previous backfill wrote the structure; a re-run may enrich it
+        current = 'Séance : X (vo2max)\n- Effort : 10 min'
+        new = current + '\n\nRéalisé :\n- Effort : 4:20/km ✅'
+        do_update, reason = compute_backfill_update(current, False, new)
+        self.assertTrue(do_update)
+        self.assertEqual(reason, 'description')
+        # identical output → nothing to do
+        do_update, _ = compute_backfill_update(current, False, current)
+        self.assertFalse(do_update)
 
     def test_empty_description_and_name_change(self):
         do_update, reason = compute_backfill_update(

@@ -10,12 +10,14 @@ This tool restores automatic synchronization of your Garmin activity names and d
 ## Features
 
 - ✅ Automatic activity name synchronization
-- ✅ Activity description synchronization (only alongside a name update — a description you edit manually on Strava after a sync is never overwritten)
+- ✅ Structured workout description: planned steps with target paces, generated from the Garmin workout
+- ✅ Planned-vs-executed report: each rep's pace compared to its target (✅/⚠️), built from Strava laps
+- ✅ Garmin metrics line: Training Effect, load, VO2max, recovery time
+- ✅ A description you edit manually on Strava after a sync is never overwritten
+- ✅ Status page (`http://localhost:8080`): last sync, recovery, upcoming workouts, gear mileage — with a real `/health` endpoint for the container healthcheck
 - ✅ Caching to minimize API calls (already-synced activities are skipped)
 - ✅ Automatic Strava token refresh
-- ✅ Detailed logging
-- ✅ Ready-to-use Docker image
-- ✅ Configurable scheduler and quiet hours
+- ✅ Ready-to-use Docker image, configurable scheduler and quiet hours
 
 ## Prerequisites
 
@@ -142,6 +144,8 @@ docker logs -f strava-garmin-sync
 | `SYNC_TZ` | Timezone for the quiet-hours window | Europe/Brussels |
 | `QUIET_HOURS_START` | No sync from this local hour... | 0 |
 | `QUIET_HOURS_END` | ...until this local hour | 6 |
+| `STATUS_PORT` | HTTP status page port (0 disables) | 8080 |
+| `STATUS_MAX_AGE_SECONDS` | `/health` fails if no sync for this long | 10800 |
 
 ### Run Modes
 

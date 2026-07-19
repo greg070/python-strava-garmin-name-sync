@@ -22,6 +22,7 @@ load_dotenv()
 
 # pylint: disable=wrong-import-position  # imports need the sys.path insert above
 from garminconnect import Garmin  # noqa: E402
+from strava_garmin_sync_app.garmin_service import get_scheduled_workouts  # noqa: E402
 from strava_garmin_sync_app.workout_formatter import (  # noqa: E402
     build_workout_description,
     is_meaningful_description,
@@ -35,27 +36,6 @@ def next_week_range(today: date) -> tuple[date, date]:
     """Monday to Sunday of the week after `today`'s week."""
     next_monday = today + timedelta(days=7 - today.weekday())
     return next_monday, next_monday + timedelta(days=6)
-
-
-def get_scheduled_workouts(garmin: Garmin, start: date, end: date) -> list:
-    """Scheduled workout calendar items between start and end (inclusive)."""
-    items = []
-    # calendar-service months are 0-based; cover both months if the week spans two
-    months = {(start.year, start.month), (end.year, end.month)}
-    for year, month in sorted(months):
-        calendar = garmin.connectapi(
-            f"/calendar-service/year/{year}/month/{month - 1}")
-        items.extend(calendar.get("calendarItems") or [])
-
-    scheduled = []
-    for item in items:
-        if item.get("itemType") != "workout":
-            continue
-        item_date = item.get("date")
-        if item_date and start.isoformat() <= item_date <= end.isoformat():
-            scheduled.append(item)
-    scheduled.sort(key=lambda i: i.get("date", ""))
-    return scheduled
 
 
 def main():

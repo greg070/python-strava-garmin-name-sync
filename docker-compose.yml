@@ -14,6 +14,10 @@ services:
       - ./logs:/app/logs
       - ./data:/app/data
 
+    # Page de statut (http://localhost:8080)
+    ports:
+      - "8080:8080"
+
     deploy:
       resources:
         limits:
@@ -23,9 +27,9 @@ services:
           memory: 128M
           cpus: '0.1'
 
-    # Sain si le fichier de log a été écrit dans les 2 dernières heures
+    # Sain si un sync a abouti récemment (endpoint /health de la page de statut)
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,sys,time; p='logs/strava_garmin_sync.log'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<7200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
       interval: 5m
       timeout: 10s
       retries: 3

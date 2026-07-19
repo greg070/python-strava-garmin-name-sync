@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from .garmin_service import get_garmin_activities_between
 from .strava_garmin_sync import StravaGarminSync, setup_logging
 from .strava_service import get_strava_activities_between, get_strava_activity
-from .workout_formatter import is_meaningful_description
+from .workout_formatter import is_app_generated_description, is_meaningful_description
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +36,11 @@ def compute_backfill_update(
     """Decide whether a backfill update is safe and needed. Returns (do, reason).
 
     A hand-written Strava description blocks any update: the user's edits
-    must survive a backfill.
+    must survive a backfill. Descriptions this app generated itself (the
+    'Séance :' header) stay replaceable so a re-run can upgrade them.
     """
     current = (current_description or '').strip()
-    if is_meaningful_description(current):
+    if is_meaningful_description(current) and not is_app_generated_description(current):
         return False, 'description personnalisée sur Strava — non touchée'
 
     description_outdated = bool(new_description) and new_description.strip() != current
@@ -69,6 +70,8 @@ def _backfill_one_activity(sync, activity, garmin_activities) -> str:
 
     needs_name_update, new_name, new_description = sync.should_update_activity(
         activity, garmin_activity)
+    new_description = sync.build_enriched_description(
+        new_description, garmin_activity, detailed, activity.start_date)
 
     do_update, reason = compute_backfill_update(
         current_description, needs_name_update, new_description)

@@ -36,4 +36,7 @@ USER app
 # Volumes pour les logs et l'état persistant (tokens, cache)
 VOLUME ["/app/logs", "/app/data"]
 
+# Page de statut (désactivable avec STATUS_PORT=0)
+EXPOSE 8080
+
 ENTRYPOINT ["python", "-m", "strava_garmin_sync_app.strava_garmin_sync"]

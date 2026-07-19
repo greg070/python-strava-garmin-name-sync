@@ -3,8 +3,8 @@
 import json
 import logging
 import time
-from datetime import datetime, timedelta
-from typing import Dict, Optional
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional
 
 from .constants import GARMIN_TO_STRAVA_TYPE
 
@@ -110,8 +110,54 @@ def get_garmin_activities_between(garmin_client, cache, start_date, end_date) ->
     return activities
 
 
+def get_training_readiness_snapshot(garmin_client) -> Optional[Dict]:
+    """Current training readiness: score, level and recovery time in minutes."""
+    try:
+        data = garmin_client.get_training_readiness(datetime.now().strftime('%Y-%m-%d'))
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            return {
+                'score': item.get('score'),
+                'level': item.get('level'),
+                'recovery_minutes': item.get('recoveryTime'),
+            }
+    except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Impossible de récupérer le training readiness: %s", e)
+    return None
+
+
+def get_scheduled_workouts(garmin_client, start: date, end: date) -> List[Dict]:
+    """Scheduled workout calendar items between start and end (inclusive)."""
+    items: List[Dict] = []
+    # calendar-service months are 0-based; cover both months if the range spans two
+    months = {(start.year, start.month), (end.year, end.month)}
+    try:
+        for year, month in sorted(months):
+            calendar = garmin_client.connectapi(
+                f"/calendar-service/year/{year}/month/{month - 1}")
+            items.extend(calendar.get("calendarItems") or [])
+    except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Impossible de récupérer le calendrier Garmin: %s", e)
+        return []
+
+    scheduled = []
+    for item in items:
+        if item.get("itemType") != "workout":
+            continue
+        item_date = item.get("date")
+        if item_date and start.isoformat() <= item_date <= end.isoformat():
+            scheduled.append(item)
+    scheduled.sort(key=lambda i: i.get("date", ""))
+    return scheduled
+
+
 __all__ = [
     "GARMIN_TO_STRAVA_TYPE",
     "get_garmin_activities_for_period",
+    "get_garmin_activities_between",
+    "get_scheduled_workouts",
+    "get_training_readiness_snapshot",
     "process_garmin_activity",
 ]

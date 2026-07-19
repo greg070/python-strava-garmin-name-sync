@@ -61,6 +61,8 @@ class SyncState:
     """Etat volatile de l'application"""
     last_strava_connection_check: float = 0
     athlete: Optional[object] = None
+    readiness: Optional[Dict] = None
+    readiness_checked: bool = False
 
 
 @dataclass
