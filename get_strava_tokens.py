@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Script to obtain Strava API tokens and save them to a file.
+Script to obtain Strava API tokens and save them where the sync app expects them
+(data/.strava_token.json).
 """
 
-import pickle
+import json
 import os
 from dotenv import load_dotenv
 from stravalib.client import Client
@@ -12,12 +13,13 @@ load_dotenv()
 
 CLIENT_ID = os.getenv('STRAVA_CLIENT_ID')
 CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET')
+TOKEN_PATH = "data/.strava_token.json"
 
 client = Client()
 
 url = client.authorization_url(client_id=CLIENT_ID,
                                redirect_uri='http://127.0.0.1:5000/authorization',
-                               scope=['read','activity:read_all','activity:write'])
+                               scope=['read', 'activity:read_all', 'activity:write'])
 
 print(f"Please visit this URL to authorize the application: {url}")
 
@@ -29,9 +31,13 @@ token_response = client.exchange_code_for_token(
     code=CODE
 )
 
-print("Access Token:", token_response['access_token'])
-print("Refresh Token:", token_response['refresh_token'])
-print("Expires At:", token_response['expires_at'])
+os.makedirs(os.path.dirname(TOKEN_PATH), exist_ok=True)
+with open(TOKEN_PATH, 'w', encoding='utf-8') as f:
+    json.dump({
+        "access_token": token_response['access_token'],
+        "refresh_token": token_response['refresh_token'],
+        "expires_at": token_response['expires_at'],
+    }, f, indent=2)
 
-with open('access_token.pickle', 'wb') as f:
-    pickle.dump(token_response, f)
+print(f"Tokens saved to {TOKEN_PATH} (expires_at={token_response['expires_at']}).")
+print("The sync app will load and refresh them automatically from there.")

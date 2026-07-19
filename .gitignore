@@ -137,6 +137,16 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.env.local
+
+# Local dev / secrets / runtime artifacts
+dev_test.py
+access_token.pickle
+logs/
+data/
+
+# macOS
+.DS_Store
 .venv
 env/
 venv/
