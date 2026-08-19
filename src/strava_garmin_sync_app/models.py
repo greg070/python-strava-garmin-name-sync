@@ -12,15 +12,21 @@ class ActivityData:
     """Classe pour stocker les données d'activité"""
     id: str
     name: str
-    start_date: datetime
+    start_date: datetime  # naive UTC, comparé au startTimeGMT Garmin
     type: str
     garmin_id: Optional[str] = None
+    has_polyline: bool = False
+    trainer: bool = False
+    manual: bool = False
 
 
 @dataclass
 class GeneralConfig:
     """Configuration générale de l'application"""
     dry_run: bool
+    sync_tz: str = "Europe/Brussels"
+    quiet_hours_start: int = 0
+    quiet_hours_end: int = 6
 
 
 @dataclass
@@ -55,6 +61,8 @@ class SyncState:
     """Etat volatile de l'application"""
     last_strava_connection_check: float = 0
     athlete: Optional[object] = None
+    readiness: Optional[Dict] = None
+    readiness_checked: bool = False
 
 
 @dataclass

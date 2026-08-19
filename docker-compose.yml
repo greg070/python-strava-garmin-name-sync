@@ -1,35 +1,23 @@
-version: '3.8'
-
 services:
   strava-garmin-sync:
     build: .
+    image: greg07/strava-garmin-name-sync:latest
     container_name: strava-garmin-sync
     restart: unless-stopped
-    environment:
-      # Configuration Strava (à remplacer par vos vraies valeurs)
-      - STRAVA_CLIENT_ID=your_strava_client_id
-      - STRAVA_CLIENT_SECRET=your_strava_client_secret
-      - STRAVA_ACCESS_TOKEN=your_strava_access_token
-      - STRAVA_REFRESH_TOKEN=your_strava_refresh_token
-      - STRAVA_REFRESH_TOKEN_AT=your_strava_refresh_token
-      
-      # Configuration Garmin (à remplacer par vos vraies valeurs)
-      - GARMIN_EMAIL=your_garmin_email
-      - GARMIN_PASSWORD=your_garmin_password
-      
-      # Configuration de synchronisation
-      - SYNC_INTERVAL_MINUTES=60  # Synchronisation toutes les 60 minutes
-      - SYNC_DAYS=7              # Nombre de jours à synchroniser
-      - RUN_MODE=scheduler        # ou 'once' pour une exécution unique
-      
-      # Timezone
-      - TZ=Europe/Paris
-    
+
+    # Toute la configuration (identifiants inclus) vient du fichier .env
+    # (copiez .env.example vers .env et remplissez vos valeurs)
+    env_file:
+      - .env
+
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      
-    # Optionnel: ressources limitées
+
+    # Page de statut (http://localhost:8080)
+    ports:
+      - "8080:8080"
+
     deploy:
       resources:
         limits:
@@ -38,14 +26,11 @@ services:
         reservations:
           memory: 128M
           cpus: '0.1'
-    
-    # Optionnel: health check
+
+    # Sain si un sync a abouti récemment (endpoint /health de la page de statut)
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
+      interval: 5m
       timeout: 10s
       retries: 3
-      start_period: 30s
-
-volumes:
-  logs:
+      start_period: 2m

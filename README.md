@@ -10,12 +10,14 @@ This tool restores automatic synchronization of your Garmin activity names and d
 ## Features
 
 - ✅ Automatic activity name synchronization
-- ✅ Activity description synchronization
-- ✅ API rate limiting compliance
+- ✅ Structured workout description: planned steps with target paces, generated from the Garmin workout
+- ✅ Planned-vs-executed report: each rep's pace compared to its target (✅/⚠️), built from Strava laps
+- ✅ Garmin metrics line: Training Effect, load, VO2max, recovery time
+- ✅ A description you edit manually on Strava after a sync is never overwritten
+- ✅ Status page (`http://localhost:8080`): last sync, recovery, upcoming workouts, gear mileage — with a real `/health` endpoint for the container healthcheck
+- ✅ Caching to minimize API calls (already-synced activities are skipped)
 - ✅ Automatic Strava token refresh
-- ✅ Detailed logging
-- ✅ Ready-to-use Docker image
-- ✅ Configurable scheduler
+- ✅ Ready-to-use Docker image, configurable scheduler and quiet hours
 
 ## Prerequisites
 
@@ -74,7 +76,7 @@ Before using this project, you must run the `get_strava_tokens.py` script **once
    python get_strava_tokens.py
    ```
 3. Follow the instructions in the terminal to authorize the app in your browser and paste the code you receive.
-4. The script will save your tokens for use by the main synchronization tool.
+4. The script saves your tokens to `data/.strava_token.json`, where the main synchronization tool loads (and refreshes) them automatically.
 
 > **Important Note:**  
 > When you run `get_strava_tokens.py`, you will be given a URL to open in your browser.  
@@ -128,25 +130,35 @@ docker logs -f strava-garmin-sync
 |----------|-------------|---------|
 | `STRAVA_CLIENT_ID` | Your Strava app client ID | Required |
 | `STRAVA_CLIENT_SECRET` | Your Strava app client secret | Required |
-| `STRAVA_ACCESS_TOKEN` | Strava access token | Required |
-| `STRAVA_REFRESH_TOKEN` | Strava refresh token | Required |
-| `STRAVA_TOKEN_EXPIRES_AT` | Strava token expiry timestamp (epoch seconds) | Required |
+| `STRAVA_ACCESS_TOKEN` | Strava access token (or via `data/.strava_token.json`) | Required |
+| `STRAVA_REFRESH_TOKEN` | Strava refresh token (or via `data/.strava_token.json`) | Required |
+| `STRAVA_TOKEN_EXPIRES_AT` | Strava token expiry timestamp (epoch seconds) | 0 |
 | `GARMIN_EMAIL` | Garmin Connect email | Required |
 | `GARMIN_PASSWORD` | Garmin Connect password | Required |
+| `GARMIN_TOKENS_FILE_LOC` | Garmin OAuth token store location | `data/.garminconnect` |
 | `SYNC_INTERVAL_MINUTES` | Sync interval (minutes) | 60 |
+| `SYNC_DAYS` | Number of past days to sync | 7 |
 | `RUN_MODE` | Run mode (`scheduler` or `once`) | scheduler |
+| `DRY_RUN` | `true` = simulate, no Strava modification | false |
+| `LOG_LEVEL` | Logging level (`DEBUG`, `INFO`, ...) | INFO |
+| `SYNC_TZ` | Timezone for the quiet-hours window | Europe/Brussels |
+| `QUIET_HOURS_START` | No sync from this local hour... | 0 |
+| `QUIET_HOURS_END` | ...until this local hour | 6 |
+| `STATUS_PORT` | HTTP status page port (0 disables) | 8080 |
+| `STATUS_MAX_AGE_SECONDS` | `/health` fails if no sync for this long | 10800 |
 
 ### Run Modes
 
 - **scheduler**: Continuous sync at the configured interval
 - **once**: Single execution then stop
 
-## Rate Limiting
+## API Usage
 
-The app automatically respects API limits:
+The app keeps API usage low:
 
-- **Strava**: 100 requests per 15 minutes, 1000 per day
-- **Garmin**: Appropriate delays between requests
+- Already-synced activities are cached (`data/.strava_synced_cache.json`) and skipped on later runs
+- Garmin activity fetches are cached in memory for one hour, with a delay between requests
+- A configurable quiet-hours window pauses syncing at night
 
 ## Getting Strava Tokens
 
@@ -197,11 +209,37 @@ docker inspect strava-garmin-sync | grep Health -A 10
 
 ### Debug
 
-For more details, add:
-```yaml
-environment:
-    - PYTHONPATH=/app
-    - LOG_LEVEL=DEBUG
+For more details, set in your `.env`:
+```bash
+LOG_LEVEL=DEBUG
+```
+
+## Backfill (one-shot)
+
+Apply workout names and structured descriptions to past activities,
+bypassing the synced cache:
+
+```bash
+python -m strava_garmin_sync_app.backfill                 # dry run, last 7 days
+python -m strava_garmin_sync_app.backfill --apply         # actually write
+python -m strava_garmin_sync_app.backfill --start 2026-06-01 --end 2026-06-30 --apply
+```
+
+Safety guards: only activities matched to a planned Garmin workout are
+considered, and an activity whose Strava description was hand-written is
+never touched.
+
+## Development
+
+```bash
+# Install the package with dev dependencies
+pip install -e .[dev]
+
+# Run the tests
+pytest
+
+# Lint
+pylint $(git ls-files '*.py')
 ```
 
 ## Security

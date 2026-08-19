@@ -137,6 +137,19 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.env.local
+# Fichiers d'env de déploiement (Portainer, etc.) — contiennent des identifiants
+env.*
+!env.example
+
+# Local dev / secrets / runtime artifacts
+dev_test.py
+access_token.pickle
+logs/
+data/
+
+# macOS
+.DS_Store
 .venv
 env/
 venv/
