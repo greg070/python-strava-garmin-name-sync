@@ -8,10 +8,10 @@ version = "1.0.0"
 description = "Sync Strava activity names and descriptions from Garmin Connect"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "stravalib==2.4.0",
-    "garminconnect==0.2.28",
+    "stravalib==2.5.0",
+    "garminconnect==0.3.11",
     "schedule>=1.2.1",
     "python-dotenv>=1.0.0",
     "tzdata; platform_system != 'Darwin'",

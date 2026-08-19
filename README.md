@@ -206,6 +206,13 @@ docker inspect strava-garmin-sync | grep Health -A 10
 1. **Expired token**: The app automatically refreshes Strava tokens
 2. **Rate limit reached**: The app waits automatically before resuming
 3. **Garmin connection issue**: Check your credentials
+4. **`Token Garmin non trouvé ou invalide` right after upgrading**: expected once.
+   garminconnect 0.3 replaced its auth engine and its token format (a single
+   `garmin_tokens.json` instead of the old `oauth1_token.json` /
+   `oauth2_token.json`). The app falls back to email/password, re-authenticates
+   and rewrites the store in the new format; later runs reuse it normally.
+   Garmin may answer `429` to the first login attempts — the library retries
+   with different strategies on its own.
 
 ### Debug
 
