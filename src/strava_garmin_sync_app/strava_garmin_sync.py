@@ -14,11 +14,12 @@ from zoneinfo import ZoneInfo
 import json
 import schedule
 from stravalib import Client as StravaClient
-from garth.exc import GarthHTTPError
 
 from garminconnect import (
     Garmin,
-    GarminConnectAuthenticationError
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    HTTPError,
 )
 
 from .models import (
@@ -315,9 +316,11 @@ class StravaGarminSync:
     def init_garmin_client(self) -> bool:
         """Initialise le client Garmin"""
         try:
-            # Using Oauth1 and OAuth2 token files from directory
+            # Réutilise le token store si présent (garminconnect >= 0.3 écrit un
+            # garmin_tokens.json ; un ancien store 0.2.x échoue et déclenche le
+            # repli email/mot de passe ci-dessous, qui le régénère au bon format)
             logger.info(
-                "Trying to login to Garmin Connect using token data from directory '%s'...", 
+                "Trying to login to Garmin Connect using token data from directory '%s'...",
                 self.garmin.tokenstore
             )
 
@@ -330,8 +333,9 @@ class StravaGarminSync:
             return True
 
         except (FileNotFoundError,
-                GarthHTTPError,
+                HTTPError,
                 GarminConnectAuthenticationError,
+                GarminConnectConnectionError,
                 json.decoder.JSONDecodeError):
             logger.warning(
                 "Token Garmin non trouvé ou invalide, connexion avec email/mot de passe..."
@@ -343,8 +347,9 @@ class StravaGarminSync:
                 display_name = self.clients.garmin.get_full_name()
                 logger.info("Connecté à Garmin: %s", display_name)
 
-                # Save Oauth1 and Oauth2 token files to directory for next login
-                self.clients.garmin.garth.dump(self.garmin.tokenstore)
+                # Persiste les tokens pour les prochains démarrages
+                # (garminconnect >= 0.3 : client.dump, l'attribut .garth a disparu)
+                self.clients.garmin.client.dump(self.garmin.tokenstore)
                 logger.info(
                     "Oauth tokens stored in '%s' directory for future use", self.garmin.tokenstore
                 )
