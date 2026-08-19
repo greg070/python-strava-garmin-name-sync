@@ -144,6 +144,7 @@ docker logs -f strava-garmin-sync
 | `SYNC_TZ` | Timezone for the quiet-hours window | Europe/Brussels |
 | `QUIET_HOURS_START` | No sync from this local hour... | 0 |
 | `QUIET_HOURS_END` | ...until this local hour | 6 |
+| `NO_MATCH_GRACE_HOURS` | How long to keep retrying an activity with no Garmin match | 48 |
 | `STATUS_PORT` | HTTP status page port (0 disables) | 8080 |
 | `STATUS_MAX_AGE_SECONDS` | `/health` fails if no sync for this long | 10800 |
 

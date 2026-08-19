@@ -27,6 +27,8 @@ class GeneralConfig:
     sync_tz: str = "Europe/Brussels"
     quiet_hours_start: int = 0
     quiet_hours_end: int = 6
+    # Délai avant de renoncer définitivement à trouver la séance Garmin
+    no_match_grace_hours: int = 48
 
 
 @dataclass
