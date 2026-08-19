@@ -102,10 +102,13 @@ def run_backfill(start_date: date, end_date: date, apply: bool) -> bool:
         sync.clients.strava, after_dt, before_dt)
 
     # marge d'un jour de chaque côté: les jours Garmin sont en heure locale
-    garmin_activities = get_garmin_activities_between(
+    garmin_activities, garmin_complete = get_garmin_activities_between(
         sync.clients.garmin, sync.cache,
         datetime.combine(start_date - timedelta(days=1), dtime.min),
         datetime.combine(end_date + timedelta(days=1), dtime.min))
+    if not garmin_complete:
+        logger.warning("⚠️ Données Garmin incomplètes : des activités peuvent être "
+                       "signalées à tort comme sans séance planifiée")
 
     counts = {"updates": 0, "skipped": 0, "errors": 0}
     updated_ids = []
