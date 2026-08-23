@@ -31,6 +31,7 @@ from .models import (
     SyncState,
     Clients,
 )
+from .activity_names import is_auto_generated_name
 from .constants import GARMIN_TO_STRAVA_TYPE
 from .garmin_service import (
     get_garmin_activities_for_period,
@@ -72,6 +73,24 @@ def setup_logging():
     )
 
 
+def should_give_up_on_match(strava_activity: ActivityData, garmin_complete: bool,
+                            grace_hours: int) -> bool:
+    """Faut-il considérer comme définitif l'absence de correspondance Garmin ?
+
+    Marquer l'activité comme synchronisée la retire du champ de vision pour
+    toujours. On ne le fait que si l'on est sûr :
+    - la récupération Garmin de la fenêtre était complète (sinon une erreur
+      réseau passagère condamnerait l'activité) ;
+    - et Garmin a eu le temps d'indexer l'activité et d'y rattacher sa séance,
+      ce qui peut prendre plusieurs heures après l'arrivée sur Strava.
+    """
+    if not garmin_complete:
+        return False
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    age_hours = (now_utc - strava_activity.start_date).total_seconds() / 3600
+    return age_hours >= grace_hours
+
+
 class StravaGarminSync:
     """Classe principale pour la synchronisation Strava-Garmin"""
     def __init__(self):
@@ -81,6 +100,7 @@ class StravaGarminSync:
             sync_tz=os.getenv('SYNC_TZ', 'Europe/Brussels'),
             quiet_hours_start=int(os.getenv('QUIET_HOURS_START', '0')),
             quiet_hours_end=int(os.getenv('QUIET_HOURS_END', '6')),
+            no_match_grace_hours=int(os.getenv('NO_MATCH_GRACE_HOURS', '48')),
         )
 
         # Strava
@@ -190,13 +210,21 @@ class StravaGarminSync:
         strava_activity: ActivityData,
         garmin_activities: Dict[str, Dict],
         synced_cache: Dict[str, float],
+        garmin_complete: bool = True,
     ) -> tuple[bool, bool, bool]:
         """Process a single Strava activity sync. Returns (updated, skipped, error)."""
         try:
             garmin_activity = self.find_matching_garmin_activity(strava_activity, garmin_activities)
             if not garmin_activity:
-                logger.info("⏭️ Aucune activité Garmin trouvée pour: '%s'", strava_activity.name)
-                synced_cache[strava_activity.id] = time.time()
+                if should_give_up_on_match(strava_activity, garmin_complete,
+                                           self.general.no_match_grace_hours):
+                    logger.info("⏭️ Aucune activité Garmin trouvée pour: '%s'",
+                                strava_activity.name)
+                    synced_cache[strava_activity.id] = time.time()
+                else:
+                    logger.info(
+                        "🔁 Pas encore de correspondance Garmin pour '%s' — nouvel essai "
+                        "au prochain cycle", strava_activity.name)
                 return False, True, False
 
             needs_update, new_name, new_description = self.should_update_activity(
@@ -419,13 +447,13 @@ class StravaGarminSync:
             logger.error("Erreur récupération activités Strava: %s", e, exc_info=True)
             return []
 
-    def get_garmin_activities_for_period(self, days: int = 7) -> Dict[str, Dict]:
-        """Récupère toutes les activités Garmin pour une période donnée"""
+    def get_garmin_activities_for_period(self, days: int = 7) -> tuple[Dict[str, Dict], bool]:
+        """Récupère les activités Garmin d'une période. Retourne (activités, complet)."""
         try:
             return get_garmin_activities_for_period(self.clients.garmin, self.cache, days)
         except Exception as e:  # pylint: disable=broad-except
             logger.error("Erreur récupération activités Garmin: %s", e)
-            return {}
+            return {}, False
 
     # Mapping Garmin typeKey to Strava type now imported from constants
 
@@ -495,22 +523,27 @@ class StravaGarminSync:
         # La description est générée depuis la structure de la séance (allures
         # cibles, répétitions) quand le workout ne porte qu'un slug technique.
         workout = garmin_activity.get('workout')
+        name_from_workout = False
         if workout:
-            garmin_name = (workout.get('workoutName') or '').strip() or garmin_name
+            workout_name = (workout.get('workoutName') or '').strip()
+            if workout_name:
+                garmin_name = workout_name
+                name_from_workout = True
             garmin_description = build_workout_description(workout) or garmin_description
 
-        # Nettoyer les noms Strava par défaut génériques
         strava_name = strava_activity.name.strip()
 
         needs_update = False
         new_name = strava_name
         new_description = None
 
-        # Mettre à jour le nom si Garmin a un nom différent et non vide
+        # Ne remplacer le nom Strava que si Garmin apporte une vraie information.
+        # Un nom issu d'une séance planifiée en porte toujours ; sinon on écarte
+        # les noms auto-générés ("Morning Run", "Course à pied le matin",
+        # "Maisod Randonnée") pour ne jamais écraser un nom personnalisé.
         if garmin_name and garmin_name != strava_name:
-            # Éviter les noms génériques comme "Running", "Cycling"
-            generic_names = ['Running', 'Cycling', 'Walking', 'Swimming', 'Workout']
-            if garmin_name not in generic_names or strava_name in generic_names:
+            garmin_is_auto = not name_from_workout and is_auto_generated_name(garmin_name)
+            if not garmin_is_auto or is_auto_generated_name(strava_name):
                 new_name = garmin_name
                 needs_update = True
 
@@ -587,8 +620,10 @@ class StravaGarminSync:
             return False
 
         garmin_activities = {}
+        garmin_complete = True
         if strava_activities_to_update:
-            garmin_activities = self.get_garmin_activities_for_period(days=sync_days)
+            garmin_activities, garmin_complete = self.get_garmin_activities_for_period(
+                days=sync_days)
             if not garmin_activities:
                 logger.warning("⚠️ Aucune activité Garmin trouvée")
                 garmin_activities = {}
@@ -602,6 +637,7 @@ class StravaGarminSync:
                 strava_activity,
                 garmin_activities,
                 synced_cache,
+                garmin_complete,
             )
             counts["updates"] += int(updated)
             counts["skipped"] += int(skipped)

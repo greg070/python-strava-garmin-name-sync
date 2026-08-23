@@ -69,24 +69,36 @@ def process_garmin_activity(garmin_client, activities: Dict[str, Dict], activity
     activities[activity_id] = activity
 
 
-def get_garmin_activities_for_period(garmin_client, cache, days: int = 7) -> Dict[str, Dict]:
-    """Fetch all Garmin activities for the last `days` days."""
+def get_garmin_activities_for_period(garmin_client, cache,
+                                     days: int = 7) -> tuple[Dict[str, Dict], bool]:
+    """Fetch all Garmin activities for the last `days` days.
+
+    Returns (activities, complete) — see get_garmin_activities_between.
+    """
     end_date = datetime.now()
     return get_garmin_activities_between(
         garmin_client, cache, end_date - timedelta(days=days), end_date)
 
 
-def get_garmin_activities_between(garmin_client, cache, start_date, end_date) -> Dict[str, Dict]:
-    """Fetch all Garmin activities between two dates using a simple in-memory cache."""
+def get_garmin_activities_between(garmin_client, cache, start_date,
+                                  end_date) -> tuple[Dict[str, Dict], bool]:
+    """Fetch all Garmin activities between two dates, with an in-memory cache.
+
+    Returns (activities, complete) where `complete` is False when at least one
+    day could not be fetched. A partial result must never be taken as proof
+    that an activity has no Garmin counterpart, otherwise a transient Garmin
+    error would permanently mark the activity as unmatchable.
+    """
     cache_key = f"garmin_activities_{start_date:%Y-%m-%d}_{end_date:%Y-%m-%d}"
     current_time = time.time()
 
     cached = cache.data.get(cache_key)
     if cached and (current_time - cached.get('timestamp', 0) < cache.duration):
         logger.info("Utilisation du cache activités Garmin (%s)", cache_key)
-        return cached.get('data', {})
+        return cached.get('data', {}), cached.get('complete', True)
 
     activities: Dict[str, Dict] = {}
+    failed_days = []
     current_date = start_date
 
     while current_date <= end_date:
@@ -99,15 +111,24 @@ def get_garmin_activities_between(garmin_client, cache, start_date, end_date) ->
             time.sleep(1)
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Erreur récupération activités Garmin pour %s: %s", date_str, e)
+            failed_days.append(date_str)
         current_date += timedelta(days=1)
+
+    complete = not failed_days
+    if not complete:
+        logger.warning(
+            "⚠️ Récupération Garmin incomplète (%s jour(s) en échec: %s) — "
+            "les activités sans correspondance ne seront pas mises en cache",
+            len(failed_days), ", ".join(failed_days))
 
     cache.data[cache_key] = {
         'data': activities,
         'timestamp': current_time,
+        'complete': complete,
     }
     logger.info("Récupéré %s activités Garmin entre %s et %s",
                 len(activities), f"{start_date:%Y-%m-%d}", f"{end_date:%Y-%m-%d}")
-    return activities
+    return activities, complete
 
 
 def get_training_readiness_snapshot(garmin_client) -> Optional[Dict]:
