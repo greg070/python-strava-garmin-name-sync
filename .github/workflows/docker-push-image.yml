@@ -19,7 +19,7 @@ jobs:
 
       - name: Extract metadata (tags)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: greg07/strava-garmin-name-sync
           tags: |
