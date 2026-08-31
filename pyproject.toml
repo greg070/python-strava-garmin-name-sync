@@ -10,7 +10,7 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
-    "stravalib==2.5.0",
+    "stravalib==2.6.0",
     "garminconnect==0.3.11",
     "schedule>=1.2.1",
     "python-dotenv>=1.0.0",
