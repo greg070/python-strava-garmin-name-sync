@@ -1,5 +1,5 @@
 stravalib==2.5.0
-garminconnect==0.3.11
+garminconnect==0.3.19
 schedule>=1.2.1
 python-dotenv>=1.0.0
 tzdata
